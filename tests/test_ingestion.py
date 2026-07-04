@@ -1,9 +1,12 @@
+import os
 import pytest
+import tempfile
 from unittest.mock import patch, MagicMock, AsyncMock
 from loglens.pipeline.ingestion import get_reader, stream_lines
 from loglens.pipeline.ingestion.file import AsyncFileReader
 from loglens.pipeline.ingestion.stdin import AsyncStdinReader
 from loglens.pipeline.ingestion.http import AsyncHTTPReader
+
 
 
 def test_get_reader_returns_file_reader():
@@ -21,10 +24,18 @@ def test_get_reader_returns_http_reader():
 
 @pytest.mark.asyncio
 async def test_file_reader_streams_lines():
-    lines = []
-    async for line in AsyncFileReader("tests/fixtures/sample.log"):
-        lines.append(line)
-    assert len(lines) == 15000
+    content = "\n".join([f"INFO [service] log line {i}" for i in range(100)])
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
+        f.write(content)
+        tmp_path = f.name
+
+    try:
+        lines = []
+        async for line in AsyncFileReader(tmp_path):
+            lines.append(line)
+        assert len(lines) == 100
+    finally:
+        os.unlink(tmp_path)
 
 
 @pytest.mark.asyncio
