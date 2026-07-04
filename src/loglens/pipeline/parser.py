@@ -17,6 +17,9 @@ PATTERNS = {
     "STANDARD": re.compile(
         r'(?P<time>\d{4}-\d{2}-\d{2}T[\d:]+Z)\s+(?P<level>\w+)\s+\[(?P<service>[^\]]+)\]\s+(?P<message>.+)'
     ),
+    "LOGLENS": re.compile(
+    r'(?P<time>\d{4}-\d{2}-\d{2}T[\d:]+Z)\s+(?P<level>\w+)\s+(?P<service>\S+)\s+(?P<message>.+)'
+),
 }
 
 def detect_format(line: str) -> str:
@@ -81,7 +84,16 @@ def parse_line(line: str, fmt: str) -> Optional[LogEntry]:
                     message=m.group("message"),
                     raw=line,
                 )
-        # fallback: plaintext
+        if fmt == "LOGLENS":
+            m = PATTERNS["LOGLENS"].match(line)
+            if m:
+                return LogEntry(
+                    timestamp=m.group("time"),
+                    level=m.group("level").upper(),
+                    service=m.group("service"),
+                    message=m.group("message").strip(),
+                    raw=line,
+                )
         return LogEntry(
             timestamp="",
             level="INFO",

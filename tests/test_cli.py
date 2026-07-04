@@ -1,3 +1,4 @@
+import re
 from typer.testing import CliRunner
 from loglens.cli import app
 
@@ -8,10 +9,14 @@ def test_help():
     assert result.exit_code == 0
     assert "LogLens" in result.output
 
+
+def strip_ansi(text: str) -> str:
+    return re.sub(r'\x1b\[[0-9;]*m', '', text)
+
 def test_version():
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert "0.1.0" in result.output
+    assert "0.1.0" in strip_ansi(result.output)
 
 def test_hello():
     result = runner.invoke(app, ["hello"])

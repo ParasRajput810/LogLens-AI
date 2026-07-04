@@ -29,6 +29,7 @@ def analyze(
     dry_run: bool = typer.Option(False, "--dry-run", help="Stop after ingestion, show stats only"),
     verbose: bool = typer.Option(False, "--verbose", help="Show sample parsed entry"),
     workers: int = typer.Option(4, "--workers", help="Number of parallel workers"),
+    deep: bool = typer.Option(False, "--deep", help="Use neural embeddings (accurate, slower)"),
 ):
     async def _run():
         line_count = 0
@@ -55,6 +56,31 @@ def analyze(
             console.print("[bold cyan][LogLens][/bold cyan] --dry-run: stopping before processing.")
             return
 
+        if deep:
+            console.print("[bold cyan][LogLens][/bold cyan] Mode: [bold magenta] Deep (neural embeddings)[/bold magenta]")
+            try:
+                from loglens.pipeline.deep_embeddings import DeepEmbeddingEngine
+                engine = DeepEmbeddingEngine()
+            except ImportError:
+                console.print(
+                    "[bold red]Deep mode requires sentence-transformers.[/bold red]\n"
+                    "Install with: [yellow]pip install sentence-transformers[/yellow]"
+                )
+                raise typer.Exit(code=1)
+        else:
+            console.print("[bold cyan][LogLens][/bold cyan] Mode: [bold green] Fast (TF-IDF embeddings)[/bold green]")
+            from loglens.pipeline.embeddings import EmbeddingEngine
+            engine = EmbeddingEngine()
+
+        if entries:
+            console.print(f"[bold cyan][LogLens][/bold cyan] Computing embeddings for [bold]{len(entries):,}[/bold] entries...")
+            vectors = engine.embed(entries)
+            console.print(
+                f"[bold cyan][LogLens][/bold cyan] Embeddings ready: "
+                f"[bold green]shape={vectors.shape}[/bold green]"
+            )
+
+        # --- worker pool ---
         progress = LiveProgress(total=len(entries))
         processed_count = 0
 
