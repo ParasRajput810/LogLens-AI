@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "loglens"
+version = "0.1.0"
+description = "AI-powered CLI for intelligent log analysis and anomaly detection"
+requires-python = ">=3.10"
+dependencies = [
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+loglens = "loglens.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/loglens"]
