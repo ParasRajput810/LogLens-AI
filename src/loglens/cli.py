@@ -4,6 +4,8 @@ from rich.console import Console
 from rich.table import Table
 from loglens.pipeline.ingestion import stream_lines
 from loglens.pipeline.parser import detect_format, parse_line
+from loglens.pipeline.worker import run_worker_pool
+from loglens.output.terminal import LiveProgress
 
 app = typer.Typer(
     name="loglens",
@@ -26,33 +28,57 @@ def analyze(
     source: str = typer.Option(..., help="Log source: file path, URL, or stdin"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Stop after ingestion, show stats only"),
     verbose: bool = typer.Option(False, "--verbose", help="Show sample parsed entry"),
+    workers: int = typer.Option(4, "--workers", help="Number of parallel workers"),
 ):
     async def _run():
         line_count = 0
-        parsed_count = 0
-        skipped_count = 0
         fmt = None
         sample_entry = None
+        entries = []
 
+        console.print(f"\n[bold cyan][LogLens][/bold cyan] Source: [yellow]{source}[/yellow]")
         async for line in stream_lines(source):
             line_count += 1
-
-            # detect format from first line
             if line_count == 1:
                 fmt = detect_format(line)
                 console.print(f"[bold cyan][LogLens][/bold cyan] Detected format: [yellow]{fmt}[/yellow]")
 
             entry = parse_line(line, fmt)
             if entry:
-                parsed_count += 1
                 if sample_entry is None:
                     sample_entry = entry
-            else:
-                skipped_count += 1
+                entries.append(entry)
 
-        console.print(f"[bold cyan][LogLens][/bold cyan] Lines read:   [bold]{line_count:,}[/bold]")
-        console.print(f"[bold cyan][LogLens][/bold cyan] Parsed:       [bold green]{parsed_count:,}[/bold green]")
-        console.print(f"[bold cyan][LogLens][/bold cyan] Skipped:      [bold red]{skipped_count}[/bold red]")
+        console.print(f"[bold cyan][LogLens][/bold cyan] Lines ingested: [bold]{line_count:,}[/bold]")
+
+        if dry_run:
+            console.print("[bold cyan][LogLens][/bold cyan] --dry-run: stopping before processing.")
+            return
+
+        progress = LiveProgress(total=len(entries))
+        processed_count = 0
+
+        def process_fn(entry):
+            nonlocal processed_count
+            processed_count += 1
+            progress.update(processed_count)
+
+        progress.start()
+
+        async def entry_stream():
+            for e in entries:
+                yield e
+
+        stats = await run_worker_pool(
+            entry_stream(),
+            process_fn,
+            num_workers=workers,
+        )
+
+        progress.stop()
+
+        console.print(f"\n[bold cyan][LogLens][/bold cyan] Processed: [bold green]{stats['processed']:,}[/bold green]")
+        console.print(f"[bold cyan][LogLens][/bold cyan] Skipped:   [bold red]{stats['skipped']}[/bold red]")
 
         if verbose and sample_entry:
             table = Table(title="Sample Parsed Entry")
@@ -63,9 +89,6 @@ def analyze(
             table.add_row("service", sample_entry.service)
             table.add_row("message", sample_entry.message)
             console.print(table)
-
-        if dry_run:
-            console.print("[bold cyan][LogLens][/bold cyan] --dry-run: stopping before processing.")
 
     asyncio.run(_run())
 
