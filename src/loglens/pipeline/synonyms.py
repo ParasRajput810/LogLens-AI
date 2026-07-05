@@ -1,8 +1,17 @@
-import re
+from __future__ import annotations
+
+import hashlib
 import json
+import logging
 import os
+import re
+import tempfile
 from collections import defaultdict
-from typing import List, Dict
+from typing import Dict, Iterable, List, Optional
+
+import platformdirs
+
+logger = logging.getLogger("loglens.synonyms")
 
 BASE_SYNONYMS: Dict[str, str] = {
     "db": "database",
@@ -30,8 +39,6 @@ BASE_SYNONYMS: Dict[str, str] = {
     "cert": "certificate",
     "creds": "credentials",
     "oom": "memory",
-    "latency": "timeout",
-    "unreachable": "refused",
     "terminated": "killed",
     "segfault": "crash",
     "sigkill": "killed",
@@ -47,46 +54,61 @@ BASE_SYNONYMS: Dict[str, str] = {
     "nullpointerexception": "crash",
     "outofmemoryerror": "memory",
     "down": "unavailable",
-    "degraded": "unavailable",
-    "unresponsive": "unavailable",
-    "hung": "timeout",
-    "stuck": "timeout",
-    "overloaded": "unavailable",
+    "unresponsive": "unresponsive",
+    "hung": "unresponsive",
+    "stuck": "unresponsive",
+    "overloaded": "overloaded",
 }
 
+STOPWORDS = frozenset({
+    "the", "for", "and", "not", "was", "were", "are", "has", "had", "have",
+    "with", "from", "this", "that", "then", "than", "when", "will", "been",
+    "being", "after", "before", "into", "over", "under", "while", "where",
+    "which", "because", "could", "should", "would", "did", "does", "done",
+    "due", "via", "per", "all", "any", "but", "its", "you", "your", "out",
+    "off", "our", "their", "them", "they", "these", "those", "there", "here",
+    "what", "who", "how", "why", "can", "cannot", "may", "might", "must",
+    "shall", "upon", "also", "only", "just", "very", "some", "such", "each",
+    "both", "few", "more", "most", "other", "same", "own", "too", "now",
+    "get", "got", "set", "yet", "still", "about", "above", "below",
+})
+
 ERROR_CODE_PATTERNS = [
-    (re.compile(r'^ECONN(\w+)$'),   lambda m: m.group(1).lower()),   # ECONNREFUSED → refused
-    (re.compile(r'^ETIMED?OUT$'),   lambda m: "timeout"),
-    (re.compile(r'^ENOENT$'),       lambda m: "missing"),
-    (re.compile(r'^EPERM$'),        lambda m: "denied"),
-    (re.compile(r'^EACCES$'),       lambda m: "denied"),
-    (re.compile(r'^ESRCH$'),        lambda m: "missing"),
-    (re.compile(r'^E[A-Z]{2,10}$'), lambda m: m.group(0)[1:].lower()),  # generic EXXX → xxx
+    (re.compile(r"^ECONN(\w+)$"), lambda m: m.group(1).lower()),  
+    (re.compile(r"^ETIMED?OUT$"), lambda m: "timeout"),
+    (re.compile(r"^ENOENT$"), lambda m: "missing"),
+    (re.compile(r"^EPERM$"), lambda m: "denied"),
+    (re.compile(r"^EACCES$"), lambda m: "denied"),
+    (re.compile(r"^ESRCH$"), lambda m: "missing"),
+    (re.compile(r"^E[A-Z]{2,10}$"), lambda m: m.group(0)[1:].lower()),
 ]
 
-CAMEL_CASE_PATTERN  = re.compile(r'([a-z])([A-Z])|([A-Z]+)([A-Z][a-z])')
-WORD_NUM_PATTERN    = re.compile(r'([a-zA-Z]+)(\d+)')
-NUM_WORD_PATTERN    = re.compile(r'(\d+)([a-zA-Z]+)')
+CAMEL_CASE_PATTERN = re.compile(r"([a-z])([A-Z])|([A-Z]+)([A-Z][a-z])")
+WORD_NUM_PATTERN = re.compile(r"([a-zA-Z]+)(\d+)$")
+NUM_WORD_PATTERN = re.compile(r"(\d+)([a-zA-Z]+)$")
+
+
+_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*|\d+")
 
 
 def split_camel_case(word: str) -> List[str]:
-    split = re.sub(r'([a-z])([A-Z])', r'\1 \2', word)
-    split = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', split)
+    split = re.sub(r"([a-z])([A-Z])", r"\1 \2", word)
+    split = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", split)
     return split.lower().split()
 
 
 def split_word_number(word: str) -> List[str]:
-    parts = []
     m = WORD_NUM_PATTERN.match(word)
     if m:
-        parts = [m.group(1), m.group(2)]
-    m2 = NUM_WORD_PATTERN.match(word)
-    if m2 and not parts:
-        parts = [m2.group(1), m2.group(2)]
-    return parts if parts else [word]
+        return [m.group(1), m.group(2)]
+    m = NUM_WORD_PATTERN.match(word)
+    if m:
+        return [m.group(1), m.group(2)]
+    return [word]
 
 
-def detect_unknown_word(word: str) -> str:
+def detect_unknown_word(word: str, synonyms: Optional[Dict[str, str]] = None) -> str:
+    syn = synonyms if synonyms is not None else BASE_SYNONYMS
     upper = word.upper()
 
     for pattern, handler in ERROR_CODE_PATTERNS:
@@ -96,70 +118,154 @@ def detect_unknown_word(word: str) -> str:
 
     if CAMEL_CASE_PATTERN.search(word):
         parts = split_camel_case(word)
-        return " ".join(BASE_SYNONYMS.get(p, p) for p in parts)
+        return " ".join(syn.get(p, p) for p in parts)
 
-    parts = split_word_number(word)
+    parts = split_word_number(word.lower())
     if len(parts) > 1:
-        return " ".join(BASE_SYNONYMS.get(p, p) for p in parts)
+        return " ".join(syn.get(p, p) for p in parts)
 
-    return word
+    return word.lower()
+
+
+def normalize_message(msg: str, synonyms: Optional[Dict[str, str]] = None) -> str:
+    
+    syn = synonyms if synonyms is not None else BASE_SYNONYMS
+    result: List[str] = []
+    for tok in _TOKEN_RE.findall(msg):          # audit S-01
+        low = tok.lower()
+        if low.isdigit():
+            result.append(tok)
+        elif low in syn:
+            result.append(syn[low])
+        else:
+            result.append(detect_unknown_word(tok, syn))
+    return " ".join(result)
+
+
+def _corpus_fingerprint(messages: List[str]) -> str:
+    h = hashlib.sha1()
+    h.update(str(len(messages)).encode())
+    for m in messages[:500]:
+        h.update(m.encode("utf-8", errors="replace"))
+        h.update(b"\n")
+    return h.hexdigest()
 
 
 class SynonymLearner:
 
-    def __init__(self, min_cooccurrence: int = 5, similarity_threshold: float = 0.7):
-        self.min_cooccurrence = min_cooccurrence
+
+    CACHE_VERSION = 2
+
+    def __init__(self,
+                 min_cooccurrence: Optional[int] = None,
+                 similarity_threshold: float = 0.7,
+                 cache_dir: Optional[str] = None,
+                 use_cache: bool = True):
+        self.min_cooccurrence = min_cooccurrence     
         self.similarity_threshold = similarity_threshold
-        self.learned: Dict[str, str] = {}               # auto-learned synonyms
-        self.cooccurrence: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        self.use_cache = use_cache
+        self.learned: Dict[str, str] = {}
         self.word_freq: Dict[str, int] = defaultdict(int)
-        self._cache_path = ".loglens_synonyms.json"     # persist learned synonyms
+        self.cooccurrence: Dict[str, Dict[str, int]] = defaultdict(
+            lambda: defaultdict(int))
+        base = cache_dir or platformdirs.user_cache_dir("loglens")
+        self._cache_path = os.path.join(base, "synonyms.json") 
 
-    def _load_cache(self):
-        if os.path.exists(self._cache_path):
+
+    def _load_cache(self, fingerprint: str) -> bool:
+        """Return True (and populate ``learned``) only when the cached
+        fingerprint matches the current corpus (audit S-06)."""
+        if not self.use_cache:
+            return False
+        try:
             with open(self._cache_path) as f:
-                self.learned = json.load(f)
+                data = json.load(f)
+            if (data.get("version") == self.CACHE_VERSION
+                    and data.get("corpus_hash") == fingerprint):
+                self.learned = dict(data.get("learned", {}))
+                return True
+        except (OSError, ValueError, TypeError):
+            pass
+        return False
 
-    def _save_cache(self):
-        with open(self._cache_path, "w") as f:
-            json.dump(self.learned, f, indent=2)
+    def _save_cache(self, fingerprint: str) -> None:
+        if not self.use_cache:
+            return
+        try:
+            os.makedirs(os.path.dirname(self._cache_path), exist_ok=True)
+            payload = {"version": self.CACHE_VERSION,
+                       "corpus_hash": fingerprint,
+                       "learned": self.learned}
+            fd, tmp = tempfile.mkstemp(
+                dir=os.path.dirname(self._cache_path), suffix=".tmp")
+            with os.fdopen(fd, "w") as f:
+                json.dump(payload, f, indent=2)
+            os.replace(tmp, self._cache_path)     
+        except OSError as e:
+            logger.debug("synonym cache write skipped: %s", e)
+
 
     def _tokenize(self, msg: str) -> List[str]:
-        return re.findall(r'\b[a-zA-Z][a-zA-Z0-9_]{2,}\b', msg.lower())
+        toks = []
+        for t in _TOKEN_RE.findall(msg.lower()):
+            if len(t) < 3 or t.isdigit() or t in STOPWORDS: 
+                continue
+            toks.append(t)
+        return toks
 
-    def fit(self, messages: List[str]):
-        self._load_cache()
+    def fit(self, messages: Iterable[str]) -> None:
+        messages = list(messages)
+        fingerprint = _corpus_fingerprint(messages)
+        if self._load_cache(fingerprint):
+            return                                 
+
+        self.learned = {}
+        self.word_freq = defaultdict(int)
+        self.cooccurrence = defaultdict(lambda: defaultdict(int))
+
+        min_cooc = self.min_cooccurrence
+        if min_cooc is None:                       
+            min_cooc = max(2, len(messages) // 500)
 
         for msg in messages:
             tokens = self._tokenize(msg)
             for token in tokens:
                 self.word_freq[token] += 1
             for i, t1 in enumerate(tokens):
-                # window of 3 words around each word
-                for t2 in tokens[max(0, i-3): i+4]:
+                for t2 in tokens[max(0, i - 3): i + 4]:
                     if t1 != t2:
                         self.cooccurrence[t1][t2] += 1
 
-        for rare_word, neighbors in self.cooccurrence.items():
-            rare_freq = self.word_freq[rare_word]
-
-            for common_word, cooc_count in neighbors.items():
-                common_freq = self.word_freq[common_word]
-
-                if rare_word in BASE_SYNONYMS:
+        known = set(BASE_SYNONYMS)
+        for rare in sorted(self.cooccurrence):
+            if rare in known or rare in STOPWORDS:
+                continue
+            rare_freq = self.word_freq[rare]
+            rare_ctx = self.cooccurrence[rare]
+            rare_chars = set(rare)
+            best: Optional[str] = None
+            best_sim = 0.0
+            for common in sorted(self.word_freq):
+                if (common == rare or common in STOPWORDS
+                        or len(common) <= len(rare)
+                        or self.word_freq[common] < rare_freq):
                     continue
-
-                if cooc_count < self.min_cooccurrence:
+                overlap = len(rare_chars & set(common)) / len(rare_chars)
+                if overlap < 0.6:
                     continue
-
-                if common_freq < rare_freq * 3:
+                common_ctx = self.cooccurrence[common]
+                shared = sum(min(c, common_ctx.get(w, 0))
+                             for w, c in rare_ctx.items())
+                if shared < min_cooc:
                     continue
+                total = sum(rare_ctx.values()) or 1
+                sim = shared / total
+                if sim >= self.similarity_threshold and sim > best_sim:
+                    best, best_sim = common, sim
+            if best:
+                self.learned[rare] = best
 
-                ratio = cooc_count / rare_freq
-                if ratio >= self.similarity_threshold:
-                    self.learned[rare_word] = common_word
-
-        self._save_cache()
+        self._save_cache(fingerprint)
 
     def get_all_synonyms(self) -> Dict[str, str]:
         merged = dict(BASE_SYNONYMS)
@@ -167,29 +273,5 @@ class SynonymLearner:
         return merged
 
 
-_learner: SynonymLearner | None = None
-
 def get_learner() -> SynonymLearner:
-    global _learner
-    if _learner is None:
-        _learner = SynonymLearner()
-        _learner._load_cache()
-    return _learner
-
-
-def normalize_message(msg: str, synonyms: Dict[str, str] | None = None) -> str:
-    if synonyms is None:
-        synonyms = get_learner().get_all_synonyms()
-
-    words = msg.lower().split()
-    result = []
-    for word in words:
-        clean = re.sub(r'[^a-zA-Z0-9]', '', word)
-        if clean in synonyms:
-            result.append(synonyms[clean])
-        elif clean and not clean.isdigit():
-            result.append(detect_unknown_word(clean))
-        else:
-            result.append(word)
-
-    return " ".join(result)
+    return SynonymLearner()

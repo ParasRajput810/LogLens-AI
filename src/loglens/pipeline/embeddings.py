@@ -1,14 +1,30 @@
+from __future__ import annotations
+
 import re
+from typing import List, Optional
+
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
-from typing import List
+
 from loglens.models import LogEntry
-from loglens.pipeline.synonyms import SynonymLearner, normalize_message, get_learner
+from loglens.pipeline.synonyms import (
+    STOPWORDS, SynonymLearner, normalize_message,
+)
+
+ENGINE_VERSION = "2"
 
 LEVEL_MAP = {
-    "DEBUG": 0.0, "INFO": 0.2, "WARN": 0.6,
-    "WARNING": 0.6, "ERROR": 1.0, "CRITICAL": 1.0
+    "EMERGENCY": 1.0, "EMERG": 1.0, "PANIC": 1.0,
+    "ALERT": 0.95, "FATAL": 0.95,
+    "CRITICAL": 0.9, "CRIT": 0.9,
+    "ERROR": 0.75, "ERR": 0.75,
+    "WARN": 0.5, "WARNING": 0.5,
+    "NOTICE": 0.3,
+    "INFO": 0.15,
+    "DEBUG": 0.05,
+    "TRACE": 0.0,
 }
+DEFAULT_LEVEL_SCORE = 0.15
 
 ERROR_KEYWORDS = [
     "error", "fail", "fatal", "exception", "timeout", "refused",
@@ -17,45 +33,67 @@ ERROR_KEYWORDS = [
     "leak", "violation", "invalid", "missing", "unreachable",
 ]
 
-HTTP_PATTERN     = re.compile(r'\b([2345]\d{2})\b')
-NUMBER_PATTERN   = re.compile(r'\b(\d+\.?\d*)\b')
-IP_PATTERN       = re.compile(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b')
-PORT_PATTERN     = re.compile(r'\b(:\d{2,5})\b')
-DURATION_PATTERN = re.compile(r'\b(\d+\.?\d*)\s*(ms|s|sec|seconds|minutes|min)\b')
-MEMORY_PATTERN   = re.compile(r'\b(\d+\.?\d*)\s*(mb|gb|kb|bytes|mib|gib)\b', re.IGNORECASE)
-REPEAT_PATTERN   = re.compile(r'repeated\s+(\d+)\s+times?', re.IGNORECASE)
+HTTP_PATTERN = re.compile(
+    r"(?:\b(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+\S+\s+"
+    r"|\bHTTP(?:/\d\.\d)?\"?\s+"
+    r"|\b(?:status|code|response)\s*[=: ]\s*\"?"
+    r"|\b(?:failed|error)\s+)"
+    r"([1-5]\d{2})\b"
+    r"|\b([1-5]\d{2})\s+(?=OK\b|Created\b|Accepted\b|No Content"
+    r"|Moved|Found\b|Bad Request|Unauthorized|Forbidden|Not Found"
+    r"|Too Many Requests|Internal Server Error|Bad Gateway"
+    r"|Service Unavailable|Gateway Time-?out)",
+    re.IGNORECASE,
+)
+NUMBER_PATTERN = re.compile(r"\b(\d+\.?\d*)\b")
+IP_PATTERN = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
+PORT_PATTERN = re.compile(r"(?<!\d):(\d{2,5})(?!\d)")
+DURATION_PATTERN = re.compile(
+    r"\b(\d+\.?\d*)\s*(ms|s|sec|seconds|minutes|min)\b")
+MEMORY_PATTERN = re.compile(
+    r"\b(\d+\.?\d*)\s*(mb|gb|kb|bytes|mib|gib)\b", re.IGNORECASE)
+REPEAT_PATTERN = re.compile(r"repeated\s+(\d+)\s+times?", re.IGNORECASE)
 
-LOG_FEATURE_WEIGHT = 3.0
+N_LOG_FEATURES = 14
+
+
+def _http_status(msg: str) -> Optional[int]:
+    for m in HTTP_PATTERN.finditer(msg):
+        g = m.group(1) or m.group(2)
+        if g:
+            return int(g)
+    return None
 
 
 def extract_features(entry: LogEntry) -> np.ndarray:
-    msg = entry.message.lower()
+    msg = entry.message
+    low = msg.lower()
 
-    level_score = LEVEL_MAP.get(entry.level.upper(), 0.2)
+    level_score = LEVEL_MAP.get(entry.level.upper(), DEFAULT_LEVEL_SCORE)
 
-    normalized = normalize_message(msg)
-    error_score = sum(1 for kw in ERROR_KEYWORDS if kw in normalized) / len(ERROR_KEYWORDS)
+    normalized = normalize_message(low)
+    error_score = sum(1 for kw in ERROR_KEYWORDS if kw in normalized) \
+        / len(ERROR_KEYWORDS)
 
-    http_match = HTTP_PATTERN.findall(msg)
-    if http_match:
-        status = int(http_match[-1])
-        http_score = 0.0 if status < 400 else (0.5 if status < 500 else 1.0)
-    else:
+    status = _http_status(msg)
+    if status is None:
         http_score = 0.0
+    else:
+        http_score = 0.0 if status < 400 else (0.5 if status < 500 else 1.0)
 
-    numbers = [float(n) for n in NUMBER_PATTERN.findall(msg)]
+    numbers = [float(n) for n in NUMBER_PATTERN.findall(low)]
     has_number = 1.0 if numbers else 0.0
-    max_number = min(np.log1p(max(numbers)), 1.0) if numbers else 0.0
+    max_number = min(np.log10(1.0 + max(numbers)) / 9.0, 1.0) if numbers else 0.0
 
     length_score = min(len(msg) / 200.0, 1.0)
 
-    has_stack = 1.0 if any(x in msg for x in ["traceback", "at line", "stack", "caused by"]) else 0.0
+    has_stack = 1.0 if any(x in low for x in (
+        "traceback", "at line", "stack", "caused by")) else 0.0
 
-    has_ip = 1.0 if IP_PATTERN.search(msg) else 0.0
+    has_ip = 1.0 if IP_PATTERN.search(low) else 0.0
+    has_port = 1.0 if PORT_PATTERN.search(low) else 0.0
 
-    has_port = 1.0 if PORT_PATTERN.search(msg) else 0.0
-
-    duration_match = DURATION_PATTERN.findall(msg)
+    duration_match = DURATION_PATTERN.findall(low)
     has_duration = 1.0 if duration_match else 0.0
     max_duration = 0.0
     if duration_match:
@@ -67,12 +105,14 @@ def extract_features(entry: LogEntry) -> np.ndarray:
             val *= 60
         max_duration = min(np.log1p(val) / 10.0, 1.0)
 
-    has_memory = 1.0 if MEMORY_PATTERN.search(msg) else 0.0
+    has_memory = 1.0 if MEMORY_PATTERN.search(low) else 0.0
 
-    repeat_match = REPEAT_PATTERN.search(msg)
-    repeat_score = min(int(repeat_match.group(1)) / 100.0, 1.0) if repeat_match else 0.0
+    repeat_match = REPEAT_PATTERN.search(low)
+    repeat_score = min(int(repeat_match.group(1)) / 100.0, 1.0) \
+        if repeat_match else 0.0
 
-    has_service = 1.0 if entry.service and entry.service.lower() not in ("unknown", "") else 0.0
+    has_service = 1.0 if entry.service and \
+        entry.service.lower() not in ("unknown", "") else 0.0
 
     return np.array([
         level_score, error_score, http_score,
@@ -83,25 +123,50 @@ def extract_features(entry: LogEntry) -> np.ndarray:
     ], dtype=np.float32)
 
 
+def _row_normalize(mat: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1, norms)
+    return mat / norms
+
+
+def combine_blocks(text_block: np.ndarray,
+                   feature_block: np.ndarray,
+                   feature_weight: float) -> np.ndarray:
+    text_n = _row_normalize(text_block)
+    feat_n = _row_normalize(feature_block)
+    combined = np.hstack([(1.0 - feature_weight) * text_n,
+                          feature_weight * feat_n])
+    return _row_normalize(combined)
+
+
 class EmbeddingEngine:
-    def __init__(self, tfidf_features: int = 256):
+
+    def __init__(self,
+                 tfidf_features: int = 256,
+                 feature_weight: float = 0.4,
+                 use_synonym_cache: bool = True):
         self.tfidf_features = tfidf_features
+        self.feature_weight = feature_weight
+        self.use_synonym_cache = use_synonym_cache
         self.vectorizer = TfidfVectorizer(
             max_features=tfidf_features,
             ngram_range=(1, 2),
             sublinear_tf=True,
             min_df=2,
             strip_accents="unicode",
-            token_pattern=r'\b[a-zA-Z][a-zA-Z0-9_]{2,}\b',
+            token_pattern=r"(?u)\b[a-zA-Z0-9_]{2,}\b",
+            stop_words=sorted(STOPWORDS),
         )
         self.fitted = False
-        self._learner: SynonymLearner | None = None  # set after corpus scan
+        self._learner: SynonymLearner | None = None
 
-    def fit(self, entries: List[LogEntry]):
+
+    def fit(self, entries: List[LogEntry]) -> "EmbeddingEngine":
         raw_messages = [e.message for e in entries]
 
-        self._learner = get_learner()
-        self._learner.fit(raw_messages)
+        if self._learner is None:
+            self._learner = SynonymLearner(use_cache=self.use_synonym_cache)
+            self._learner.fit(raw_messages)
 
         synonyms = self._learner.get_all_synonyms()
         normalized = [normalize_message(m, synonyms) for m in raw_messages]
@@ -110,36 +175,31 @@ class EmbeddingEngine:
         self.vectorizer.set_params(min_df=min_df)
         self.vectorizer.fit(normalized)
         self.fitted = True
+        return self
 
     def _get_normalized(self, entries: List[LogEntry]) -> List[str]:
-        synonyms = (
-            self._learner.get_all_synonyms()
-            if self._learner
-            else get_learner().get_all_synonyms()
-        )
+        synonyms = (self._learner.get_all_synonyms()
+                    if self._learner else None)
         return [normalize_message(e.message, synonyms) for e in entries]
 
     def embed(self, entries: List[LogEntry]) -> np.ndarray:
+        if not entries:
+            return np.zeros((0, N_LOG_FEATURES), dtype=np.float32)
         if not self.fitted:
             self.fit(entries)
 
         normalized = self._get_normalized(entries)
-        tfidf_matrix = self.vectorizer.transform(normalized).toarray().astype(np.float32)
+        tfidf = self.vectorizer.transform(normalized).toarray().astype(np.float32)
 
-        log_features = np.array(
-            [extract_features(e) for e in entries], dtype=np.float32
-        ) * LOG_FEATURE_WEIGHT
+        feats = np.array([
+            e.metadata.get("_features")
+            if isinstance(e.metadata.get("_features"), np.ndarray)
+            else extract_features(e)
+            for e in entries
+        ], dtype=np.float32)
 
-        combined = np.hstack([tfidf_matrix, log_features])
-        norms = np.linalg.norm(combined, axis=1, keepdims=True)
-        norms = np.where(norms == 0, 1, norms)
-        return combined / norms
+        return combine_blocks(tfidf, feats, self.feature_weight)
 
-
-_engine: EmbeddingEngine | None = None
 
 def get_engine() -> EmbeddingEngine:
-    global _engine
-    if _engine is None:
-        _engine = EmbeddingEngine()
-    return _engine
+    return EmbeddingEngine()

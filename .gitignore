@@ -16,6 +16,8 @@ env/
 # Test fixtures (generated files — too large for git)
 tests/fixtures/large_sample.log
 tests/fixtures/large_sample_labels.json
+tests/fixtures/demo_incident.log
+tests/fixtures/sample.log
 
 # Auto-learned synonyms (runtime generated)
 .loglens_synonyms.json

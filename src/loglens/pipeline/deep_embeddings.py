@@ -1,56 +1,118 @@
 from __future__ import annotations
+
+import threading
+from typing import List, Optional
+
 import numpy as np
-from typing import List
+from sklearn.feature_extraction.text import TfidfVectorizer
+
 from loglens.models import LogEntry
-from loglens.pipeline.embeddings import extract_features, LOG_FEATURE_WEIGHT
-from loglens.pipeline.synonyms import normalize_message, get_learner
+from loglens.pipeline.embeddings import (
+    N_LOG_FEATURES, _row_normalize, extract_features,
+)
+from loglens.pipeline.synonyms import STOPWORDS, SynonymLearner, normalize_message
+
+ENGINE_VERSION = "2"
 
 _model = None
+_model_lock = threading.Lock()          
+
 
 def _load_model():
     global _model
-    if _model is None:
+    with _model_lock:
+        if _model is not None:
+            return _model
         try:
             from sentence_transformers import SentenceTransformer
-            _model = SentenceTransformer("all-MiniLM-L6-v2")  # 80MB, free, local
         except ImportError:
             raise ImportError(
                 "Deep mode requires sentence-transformers.\n"
                 "Install it with: pip install sentence-transformers"
             )
-    return _model
+        try:
+            _model = SentenceTransformer("all-MiniLM-L6-v2")
+        except Exception as e:                          # audit DE-04
+            raise RuntimeError(
+                "Could not load the sentence-transformers model "
+                f"'all-MiniLM-L6-v2' ({type(e).__name__}: {e}).\n"
+                "This usually means no internet access for the first "
+                "download. Re-run without --deep to use fast TF-IDF mode."
+            ) from e
+        return _model
 
 
 class DeepEmbeddingEngine:
-    def __init__(self):
-        self._learner = get_learner()
 
-    def fit(self, entries: List[LogEntry]):
-        messages = [e.message for e in entries]
-        self._learner.fit(messages)
+    def __init__(self,
+                 batch_size: int = 256,
+                 tfidf_dims: int = 32,
+                 feature_weight: float = 0.4,
+                 tfidf_weight: float = 0.2,
+                 use_synonym_cache: bool = True):
+        self.batch_size = batch_size                   
+        self.tfidf_dims = tfidf_dims                    
+        self.feature_weight = feature_weight
+        self.tfidf_weight = tfidf_weight
+        self._learner: Optional[SynonymLearner] = None
+        self._use_synonym_cache = use_synonym_cache
+
+    def fit(self, entries: List[LogEntry]) -> "DeepEmbeddingEngine":
+        self._learner = SynonymLearner(use_cache=self._use_synonym_cache)
+        self._learner.fit([e.message for e in entries])
+        return self
 
     def embed(self, entries: List[LogEntry]) -> np.ndarray:
+        if not entries:
+            return np.zeros((0, 384 + self.tfidf_dims + N_LOG_FEATURES),
+                            dtype=np.float32)
         model = _load_model()
-        synonyms = self._learner.get_all_synonyms()
 
+        if self._learner is None:                       
+            self.fit(entries)
+        synonyms = self._learner.get_all_synonyms()
         messages = [normalize_message(e.message, synonyms) for e in entries]
 
-        semantic = model.encode(messages, show_progress_bar=False).astype(np.float32)
+        semantic = model.encode(
+            messages,
+            batch_size=self.batch_size,                 
+            show_progress_bar=False,
+        ).astype(np.float32)
+        semantic = _row_normalize(semantic)
 
-        log_features = np.array(
-            [extract_features(e) for e in entries], dtype=np.float32
-        ) * LOG_FEATURE_WEIGHT
+        if self.tfidf_dims > 0:                        
+            vec = TfidfVectorizer(
+                max_features=self.tfidf_dims,
+                sublinear_tf=True,
+                min_df=2 if len(messages) >= 10 else 1,
+                token_pattern=r"(?u)\b[a-zA-Z0-9_]{2,}\b",
+                stop_words=sorted(STOPWORDS),
+            )
+            tfidf = vec.fit_transform(messages).toarray().astype(np.float32)
+            if tfidf.shape[1] < self.tfidf_dims:
+                pad = np.zeros((len(messages),
+                                self.tfidf_dims - tfidf.shape[1]),
+                               dtype=np.float32)
+                tfidf = np.hstack([tfidf, pad])
+            tfidf = _row_normalize(tfidf)
+            w = self.tfidf_weight
+            text_block = np.hstack([(1.0 - w) * semantic, w * tfidf])
+        else:
+            text_block = semantic
 
-        combined = np.hstack([semantic, log_features])
-        norms = np.linalg.norm(combined, axis=1, keepdims=True)
-        norms = np.where(norms == 0, 1, norms)
-        return combined / norms
+        feats = np.array([
+            e.metadata.get("_features")
+            if isinstance(e.metadata.get("_features"), np.ndarray)
+            else extract_features(e)
+            for e in entries
+        ], dtype=np.float32)
+        feats = _row_normalize(feats)
 
+        wf = self.feature_weight
+        combined = np.hstack([(1.0 - wf) * _row_normalize(text_block),
+                              wf * feats])
+        return _row_normalize(combined)
 
-_deep_engine: DeepEmbeddingEngine | None = None
 
 def get_deep_engine() -> DeepEmbeddingEngine:
-    global _deep_engine
-    if _deep_engine is None:
-        _deep_engine = DeepEmbeddingEngine()
-    return _deep_engine
+    return DeepEmbeddingEngine()
