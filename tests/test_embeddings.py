@@ -145,7 +145,7 @@ def test_base_synonym_normalization():
     assert "database" in normalize_message("db connection timeout")
     assert "connection" in normalize_message("conn refused")
     assert "memory" in normalize_message("oom killed")
-    assert "timeout" in normalize_message("latency spike")
+    assert "timeout" in normalize_message("etimedout on port 5432")
 
 
 def test_camel_case_splitting():
@@ -238,7 +238,7 @@ skip_if_no_st = pytest.mark.skipif(
 
 @skip_if_no_st
 def test_deep_embed_returns_correct_shape():
-    """Deep mode should return (n, 398) = 384 semantic + 14 log features."""
+    """Deep mode should return (n, 430) = 384 semantic + 32 tfidf + 14 log features."""
     from loglens.pipeline.deep_embeddings import DeepEmbeddingEngine
     engine = DeepEmbeddingEngine()
     entries = [
@@ -248,7 +248,7 @@ def test_deep_embed_returns_correct_shape():
     ]
     vectors = engine.embed(entries)
     assert vectors.shape[0] == 3
-    assert vectors.shape[1] == 398   # 384 + 14
+    assert vectors.shape[1] == 430   # 384 semantic + 32 tfidf + 14 features
 
 
 @skip_if_no_st

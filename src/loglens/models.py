@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional
+
 
 @dataclass
 class LogEntry:
@@ -9,3 +9,4 @@ class LogEntry:
     message: str
     raw: str
     metadata: dict = field(default_factory=dict)
+    parsed: bool = True
