@@ -4,9 +4,11 @@ import pytest
 from loglens.models import LogEntry
 from loglens.pipeline.detector import (
     detect, detect_anomalies, cluster_summary,
-    get_severity, DetectorConfig,
+    get_severity, otsu_threshold, DetectorConfig,
 )
 
+
+# --- helpers ---
 
 def make_entry(msg: str, level: str = "INFO", service: str = "svc") -> LogEntry:
     return LogEntry(
@@ -19,10 +21,12 @@ def make_entry(msg: str, level: str = "INFO", service: str = "svc") -> LogEntry:
 
 
 def dummy_vectors(n: int, dim: int = 16, seed: int = 0) -> np.ndarray:
+    """Deterministic pseudo-embeddings; detector normalizes internally."""
     rng = np.random.default_rng(seed)
     return rng.random((n, dim)).astype(np.float32)
 
 
+# --- basic contracts ---
 
 def test_empty_input():
     res = detect([], np.zeros((0, 16)))
@@ -37,8 +41,10 @@ def test_severity_mapping():
     assert get_severity("SOMETHING_UNKNOWN") == 6  # default
 
 
+# --- flagging behaviour ---
 
 def test_critical_always_flagged():
+    """FATAL / CRITICAL must always be flagged regardless of clustering."""
     entries = [make_entry(f"routine heartbeat {i}", "INFO") for i in range(30)]
     entries.append(make_entry("kernel panic unrecoverable", "FATAL"))
     vecs = dummy_vectors(len(entries))
@@ -48,6 +54,7 @@ def test_critical_always_flagged():
 
 
 def test_routine_info_not_flooding_anomalies():
+    """A corpus of pure routine INFO should produce few/no anomalies."""
     entries = [make_entry(f"request served ok {i % 5}", "INFO") for i in range(50)]
     vecs = dummy_vectors(len(entries))
     res = detect(entries, vecs)
@@ -55,6 +62,7 @@ def test_routine_info_not_flooding_anomalies():
 
 
 def test_error_keyword_boosts_score():
+    """ERROR with a failure keyword should outscore a plain INFO."""
     entries = [make_entry(f"user login ok {i}", "INFO") for i in range(20)]
     err = make_entry("database connection refused timeout", "ERROR")
     entries.append(err)
@@ -62,6 +70,8 @@ def test_error_keyword_boosts_score():
     res = detect(entries, vecs)
     assert res.scores[-1] > res.scores[0]
 
+
+# --- grouping & summary ---
 
 def test_anomaly_groups_have_templates():
     entries = [make_entry(f"disk read ok {i}", "INFO") for i in range(20)]
@@ -77,6 +87,7 @@ def test_anomaly_groups_have_templates():
 
 
 def test_incident_mode_triggers_on_high_severe_share():
+    """If >=30% of entries are ERROR+, incident_mode should be True."""
     entries = ([make_entry("service crash error", "ERROR") for _ in range(6)]
                + [make_entry("ok", "INFO") for _ in range(4)])
     vecs = dummy_vectors(len(entries))
@@ -108,3 +119,28 @@ def test_config_from_sensitivity():
     low = DetectorConfig.from_sensitivity("low")
     high = DetectorConfig.from_sensitivity("high")
     assert low.flag_threshold > high.flag_threshold
+
+
+
+def test_otsu_threshold_returns_none_on_tiny_input():
+    assert otsu_threshold(np.array([0.4, 0.6])) is None
+
+
+def test_otsu_threshold_finds_valley():
+    # bimodal: cluster near 0.2 and near 0.85 -> cut should sit between
+    lo = np.full(200, 0.2)
+    hi = np.full(200, 0.85)
+    t = otsu_threshold(np.concatenate([lo, hi]))
+    assert t is not None
+    assert 0.35 <= t <= 0.9
+
+
+def test_auto_threshold_config_toggle():
+    entries = ([make_entry(f"disk ok {i}", "INFO") for i in range(40)]
+               + [make_entry("payment failed declined", "ERROR")
+                  for _ in range(8)])
+    vecs = dummy_vectors(len(entries))
+    cfg = DetectorConfig(auto_threshold=True)
+    res = detect(entries, vecs, cfg)
+    assert "threshold_used" in res.meta
+    assert res.meta["auto_threshold"] is True

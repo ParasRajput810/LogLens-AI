@@ -25,13 +25,13 @@ LEVEL_SEVERITY: Dict[str, int] = {
     "ERR":       3,
     "WARN":      4,
     "WARNING":   4,
-    "NOTICE":    5,  
+    "NOTICE":    5,
     "INFO":      6,
     "DEBUG":     7,
     "TRACE":     7,
 }
-DEFAULT_SEVERITY = 6        
-HARD_FLAG_SEVERITY = 1        
+DEFAULT_SEVERITY = 6
+HARD_FLAG_SEVERITY = 1
 
 SEVERITY_BASE: Dict[int, float] = {
     0: 1.0, 1: 1.0,           # hard-flagged anyway
@@ -67,24 +67,49 @@ def get_severity(level: str) -> int:
     return LEVEL_SEVERITY.get(level.upper(), DEFAULT_SEVERITY)
 
 
+def otsu_threshold(scores: np.ndarray,
+                   lo: float = 0.35, hi: float = 0.95,
+                   bins: int = 64) -> Optional[float]:
+    s = np.asarray(scores, dtype=np.float64)
+    s = s[(s > 0.0) & (s < 1.0)]          # 0/1 are already hard-decided
+    if len(s) < 20:
+        return None
+    hist, edges = np.histogram(s, bins=bins, range=(0.0, 1.0))
+    total = float(hist.sum())
+    if total == 0:
+        return None
+    p = hist.astype(np.float64) / total
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    omega = np.cumsum(p)
+    mu = np.cumsum(p * centers)
+    mu_t = mu[-1]
+    denom = omega * (1.0 - omega)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sigma_b = (mu_t * omega - mu) ** 2 / denom
+    sigma_b = np.nan_to_num(sigma_b)
+    t = centers[int(np.argmax(sigma_b))]
+    return float(np.clip(t, lo, hi))
+
+
 @dataclass
 class DetectorConfig:
-    eps: Optional[float] = None        
+    eps: Optional[float] = None
     min_samples: int = 4
-    rare_pct: float = 0.02             
-    rare_min: int = 3                  
-    flag_threshold: float = 0.70       
-    safe_rarity_damp: float = 0.5     
-    burst_window: float = 60.0       
-    burst_factor: float = 4.0          
-    burst_min: int = 10              
+    rare_pct: float = 0.02
+    rare_min: int = 3
+    flag_threshold: float = 0.70
+    auto_threshold: bool = False     
+    safe_rarity_damp: float = 0.5
+    burst_window: float = 60.0
+    burst_factor: float = 4.0
+    burst_min: int = 10
     enable_burst: bool = True
-    flood_share: float = 0.20         
-    incident_share: float = 0.30     
-    pattern_min: int = 5               
+    flood_share: float = 0.20
+    incident_share: float = 0.30
+    pattern_min: int = 5
     max_patterns: int = 15
-    recurring_share: float = 0.002   
-    recurring_min: int = 5             
+    recurring_share: float = 0.002
+    recurring_min: int = 5
 
     @classmethod
     def from_sensitivity(cls, sensitivity: str = "normal", **overrides) -> "DetectorConfig":
@@ -94,6 +119,7 @@ class DetectorConfig:
             if v is not None and hasattr(cfg, k):
                 setattr(cfg, k, v)
         return cfg
+
 
 @dataclass
 class AnomalyGroup:
@@ -121,12 +147,12 @@ class PatternInfo:
 @dataclass
 class DetectionResult:
     entries: Sequence[LogEntry]
-    scores: np.ndarray                 
-    flagged: np.ndarray                
-    reasons: List[List[str]]           
-    labels: np.ndarray                 
-    groups: List[AnomalyGroup]         
-    patterns: List[PatternInfo]       
+    scores: np.ndarray
+    flagged: np.ndarray
+    reasons: List[List[str]]
+    labels: np.ndarray
+    groups: List[AnomalyGroup]
+    patterns: List[PatternInfo]
     incident_mode: bool
     incident_note: str
     meta: Dict[str, object] = field(default_factory=dict)
@@ -151,19 +177,20 @@ class DetectionResult:
             "incident_mode": self.incident_mode,
         }
 
+
 def estimate_eps(vectors: np.ndarray, k: int = 4,
                  lo: float = 0.15, hi: float = 0.90) -> float:
     n = len(vectors)
     if n <= k + 1:
         return 0.5
     sample = vectors
-    if n > 5000:                       
+    if n > 5000:
         rng = np.random.default_rng(0)
         sample = vectors[rng.choice(n, 5000, replace=False)]
     nn = NearestNeighbors(n_neighbors=min(k + 1, len(sample))).fit(sample)
     dists, _ = nn.kneighbors(sample)
     kdist = np.sort(dists[:, -1])
-    
+
     x = np.linspace(0.0, 1.0, len(kdist))
     y = kdist
     x0, y0, x1, y1 = x[0], y[0], x[-1], y[-1]
@@ -171,6 +198,7 @@ def estimate_eps(vectors: np.ndarray, k: int = 4,
     d = np.abs((y1 - y0) * x - (x1 - x0) * y + x1 * y0 - y1 * x0) / denom
     eps = float(y[int(np.argmax(d))])
     return float(np.clip(eps if eps > 0 else 0.5, lo, hi))
+
 
 def detect_bursts(entries: Sequence[LogEntry], cfg: DetectorConfig
                   ) -> Tuple[np.ndarray, str]:
@@ -203,6 +231,7 @@ def detect_bursts(entries: Sequence[LogEntry], cfg: DetectorConfig
             in_hot = np.isin(windows, list(hot)) & mask
             burst |= in_hot
     return burst, ""
+
 
 def detect(entries: Sequence[LogEntry],
            embeddings: np.ndarray,
@@ -368,7 +397,6 @@ def detect(entries: Sequence[LogEntry],
             entry_reasons.append(
                 f"flood: pattern is {g.count / n:.0%} of the whole file")
 
-        
         if group_recurring[gi]:
             score += 0.18
             entry_reasons.append(
@@ -392,7 +420,12 @@ def detect(entries: Sequence[LogEntry],
         scores[i] = min(1.0, score)
         reasons[i] = entry_reasons
 
-    flagged = scores >= cfg.flag_threshold
+    threshold = cfg.flag_threshold
+    if cfg.auto_threshold:
+        auto = otsu_threshold(scores)
+        if auto is not None:
+            threshold = auto
+    flagged = scores >= threshold
 
     for i, e in enumerate(entries):
         e.anomaly_score = float(scores[i])
@@ -443,6 +476,8 @@ def detect(entries: Sequence[LogEntry],
         "unique_templates": n_groups,
         "severe_share": severe_share,
         "flag_threshold": cfg.flag_threshold,
+        "threshold_used": float(threshold),
+        "auto_threshold": cfg.auto_threshold,
     }
     if burst_note:
         meta["burst_note"] = burst_note
@@ -452,6 +487,7 @@ def detect(entries: Sequence[LogEntry],
         labels=entry_labels, groups=groups, patterns=patterns,
         incident_mode=incident_mode, incident_note=incident_note, meta=meta,
     )
+
 
 def detect_anomalies(entries: List[LogEntry],
                      embeddings: np.ndarray,
