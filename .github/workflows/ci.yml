@@ -23,3 +23,8 @@ jobs:
 
       - name: Run tests
         run: pytest tests/ -v
+
+      - name: Accuracy gate (Stage 4 benchmark)
+        run: |
+          printf -- '- INFO node boot ok\n- INFO heartbeat\nKERN FATAL kernel panic\nKERN ERROR disk failure timeout\n%.0s- INFO ok\n' {1..30} > /tmp/bgl_ci.log
+          loglens benchmark /tmp/bgl_ci.log --min-f1 0.30
