@@ -8,7 +8,7 @@ from loglens.pipeline.parser import detect_format, parse_line
 from loglens.pipeline.worker import run_worker_pool
 from loglens.output.terminal import LiveProgress
 from loglens.pipeline.detector import detect_anomalies, cluster_summary, DetectorConfig
-
+from loglens.pipeline.benchmark import run_benchmark
 app = typer.Typer(
     name="loglens",
     help="LogLens AI Intelligent log analysis and anomaly detection",
@@ -222,6 +222,64 @@ def analyze(
             console.print(table)
 
     asyncio.run(_run()) 
+
+@app.command()
+def benchmark(
+    dataset: str = typer.Argument(..., help="Path to labeled log file"),
+    fmt: str = typer.Option("bgl", "--format", help="Label format: bgl | jsonl | labeled"),
+    limit: int = typer.Option(None, "--limit", help="Max lines to load (default: all)"),
+    grid: bool = typer.Option(False, "--grid", help="Grid-search feature_weight x threshold"),
+    supervised: bool = typer.Option(False, "--supervised", help="Train + eval logistic-reg head"),
+    min_f1: float = typer.Option(None, "--min-f1", help="Fail (exit 1) if baseline F1 below this"),
+):
+    console.print(f"\n[bold cyan][LogLens][/bold cyan] Benchmarking: [yellow]{dataset}[/yellow] "
+                  f"([dim]format={fmt}[/dim])")
+
+    with console.status("[cyan]Parsing, embedding, detecting...[/cyan]"):
+        out = run_benchmark(dataset, fmt=fmt, limit=limit,
+                            do_grid=grid, do_supervised=supervised)
+
+    if out.get("entries", 0) == 0:
+        console.print("[bold red]No entries loaded — check path/format.[/bold red]")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[bold cyan][LogLens][/bold cyan] Loaded [bold]{out['entries']:,}[/bold] entries, "
+        f"[bold red]{out['positives']:,}[/bold red] labeled anomalies\n"
+    )
+
+    table = Table(title="Detection Accuracy", show_header=True, header_style="bold cyan")
+    table.add_column("Method", style="white")
+    table.add_column("Precision", justify="right")
+    table.add_column("Recall", justify="right")
+    table.add_column("F1", justify="right", style="bold")
+
+    def _row(name, m):
+        table.add_row(name, f"{m['precision']:.3f}", f"{m['recall']:.3f}", f"{m['f1']:.3f}")
+
+    baseline = out["baseline"]
+    _row("Rule + embeddings (baseline)", baseline)
+    if "supervised" in out:
+        _row("Supervised head (logistic reg)", out["supervised"])
+    console.print(table)
+
+    if "grid_best_f1" in out:
+        p = out["grid_best_params"]
+        console.print(
+            f"\n[bold cyan][LogLens][/bold cyan] Grid-search best F1: "
+            f"[bold green]{out['grid_best_f1']:.3f}[/bold green] @ "
+            f"feature_weight=[yellow]{p['feature_weight']}[/yellow], "
+            f"threshold=[yellow]{p['flag_threshold']}[/yellow]"
+        )
+        console.print("[dim]  → bake these into embeddings.py / detector.py defaults[/dim]")
+
+    if min_f1 is not None:
+        f1 = baseline["f1"]
+        if f1 < min_f1:
+            console.print(f"\n[bold red]✗ FAIL: F1 {f1:.3f} < required {min_f1:.3f}[/bold red]")
+            raise typer.Exit(code=1)
+        console.print(f"\n[bold green]✓ PASS: F1 {f1:.3f} >= {min_f1:.3f}[/bold green]")
+
 
 if __name__ == "__main__":
     app()
