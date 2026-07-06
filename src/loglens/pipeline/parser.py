@@ -35,6 +35,10 @@ PATTERNS = {
         r'^(?P<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\s+'
         r'(?P<level>\w+)\s+(?P<service>\w+)\s+(?P<message>.+)'
     ),
+    "HDFS": re.compile(
+        r'^(?P<date>\d{6})\s+(?P<time>\d{6})\s+(?P<pid>\d+)\s+'
+        r'(?P<level>[A-Z]+)\s+(?P<service>\S+?):\s+(?P<message>.+)'
+    ),
     "HPC": re.compile(
         r'^(?P<label>-|[A-Z0-9_]+)\s+(?P<epoch>\d{9,10})\s+'
         r'(?P<date>\d{4}\.\d\d\.\d\d)\s+(?P<node>\S+)\s+(?P<message>.+)'
@@ -123,7 +127,6 @@ def status_to_level(status: int) -> str:
     if status >= 400:
         return "WARN"
     return "INFO"
-
 
 
 GCP_SEVERITY = {
@@ -300,15 +303,30 @@ def parse_line(line: str, fmt: str) -> Optional[LogEntry]:
                     raw=line,
                     metadata={"ip": m.group("ip"), "status": m.group("status")},
                 )
+        if fmt == "HDFS":
+            m = PATTERNS["HDFS"].match(line)
+            if m:
+                return LogEntry(
+                    timestamp=f'{m.group("date")} {m.group("time")}',
+                    level=_norm_level(m.group("level")),   # FATAL->CRITICAL
+                    service=m.group("service").rstrip(":"),
+                    message=m.group("message").strip(),
+                    raw=line,
+                    metadata={"pid": m.group("pid")},
+                )
         if fmt == "SYSLOG":
             stripped = _PRI_RE.sub("", line)
             m = PATTERNS["SYSLOG"].match(stripped)
             if m:
+                msg = m.group("message").strip()
+                lvl = _syslog_level(line)
+                if lvl == "INFO":           
+                    lvl = infer_level(msg)
                 return LogEntry(
                     timestamp=m.group("time"),
-                    level=_syslog_level(line),
+                    level=lvl,
                     service=m.group("service").rstrip(":"),
-                    message=m.group("message").strip(),
+                    message=msg,
                     raw=line,
                 )
         if fmt == "LOGLENS":
@@ -347,28 +365,24 @@ def parse_line(line: str, fmt: str) -> Optional[LogEntry]:
         if fmt == "WINCBS":
             m = PATTERNS["WINCBS"].match(line)
             if m:
-                msg = m.group("message").strip()
                 return LogEntry(
                     timestamp=m.group("time"),
                     level=_norm_level(m.group("level")),
                     service=m.group("service"),
-                    message=msg,
+                    message=m.group("message").strip(),
                     raw=line,
                 )
         if fmt == "HPC":
             m = PATTERNS["HPC"].match(line)
             if m:
                 msg = m.group("message").strip()
-                label = m.group("label")
-                # NOTE: alert_label kept only as metadata (ground-truth),
-                # level is inferred purely from message => fair benchmark
                 return LogEntry(
                     timestamp=m.group("date"),
                     level=infer_level(msg),
                     service=m.group("node"),
                     message=msg,
                     raw=line,
-                    metadata={"alert_label": label},
+                    metadata={"alert_label": m.group("label")},
                 )
         if fmt == "HEALTHAPP":
             m = PATTERNS["HEALTHAPP"].match(line)

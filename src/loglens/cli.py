@@ -9,6 +9,8 @@ from loglens.pipeline.worker import run_worker_pool
 from loglens.output.terminal import LiveProgress
 from loglens.pipeline.detector import detect_anomalies, cluster_summary, DetectorConfig
 from loglens.pipeline.benchmark import run_benchmark
+from loglens.pipeline.turbo import scan_file as turbo_scan
+
 app = typer.Typer(
     name="loglens",
     help="LogLens AI Intelligent log analysis and anomaly detection",
@@ -34,8 +36,65 @@ def analyze(
     deep: bool = typer.Option(False, "--deep", help="Use neural embeddings (accurate, slower)"),
     limit: int = typer.Option(20, "--limit", help="Max anomalies to display (default: 20)"),
     sort_by: str = typer.Option("severity", "--sort-by", help="Sort anomalies by: severity | time | service"),
+    turbo: bool = typer.Option(False, "--turbo", help="Fast multiprocess scan for huge files (byte-range + template dedup, skips embeddings)"),
 ):
     async def _run():
+
+        if turbo:
+            console.print(f"\n[bold cyan][LogLens][/bold cyan] Source: [yellow]{source}[/yellow]")
+            console.print("[bold cyan][LogLens][/bold cyan] Mode: [bold magenta]⚡ Turbo (parallel scan)[/bold magenta]")
+            import functools
+            loop = asyncio.get_event_loop()
+            res = await loop.run_in_executor(
+                None,
+                functools.partial(turbo_scan, source, workers=(workers if workers else None)),
+            )
+            console.print(f"[bold cyan][LogLens][/bold cyan] Workers: [bold]{res.workers}[/bold]")
+            console.print(f"[bold cyan][LogLens][/bold cyan] Parsed lines: [bold]{res.parsed_lines:,}[/bold]")
+            console.print(
+                f"[bold cyan][LogLens][/bold cyan] Unique templates: [bold]{len(res.templates):,}[/bold]  "
+                f"(redundancy [green]{res.redundancy() * 100:.1f}%[/green])"
+            )
+            anomalies = res.anomalies()
+            severe = sum(1 for a in anomalies if a.level.upper() in ("EMERGENCY", "FATAL", "CRITICAL", "ERROR"))
+            incident_flag = ""
+            if res.parsed_lines and severe / res.parsed_lines >= 0.30:
+                incident_flag = " [bold red blink]⚠ INCIDENT[/bold red blink]"
+            console.print(
+                f"[bold cyan][LogLens][/bold cyan] Anomalies: "
+                f"[bold red]{len(anomalies):,}[/bold red] 🚨{incident_flag}"
+            )
+
+            def _level_color(lvl: str) -> str:
+                lvl = lvl.upper()
+                if lvl in ("ERROR", "CRITICAL", "FATAL", "EMERGENCY"):
+                    return "bold red"
+                elif lvl in ("WARN", "WARNING"):
+                    return "bold yellow"
+                return "dim"
+
+            display = anomalies[:limit]
+            if display:
+                console.print()
+                console.print(Panel(
+                    "\n".join(
+                        f"[{_level_color(a.level)}] [{a.level}][/{_level_color(a.level)}] "
+                        f"[yellow]{a.service}[/yellow] "
+                        f"[dim](×{a.count:,}, score {a.score})[/dim] — {a.sample[:110]}"
+                        for a in display
+                    ),
+                    title=f"[bold red]TOP ANOMALIES ({len(anomalies)} total)[/bold red]",
+                    border_style="red",
+                ))
+                if len(anomalies) > limit:
+                    console.print(
+                        f"[dim]... and {len(anomalies) - limit} more "
+                        f"(use --limit {limit * 2} to see more)[/dim]"
+                    )
+            else:
+                console.print("\n[bold green] No anomalies detected![/bold green]")
+            return   # turbo done — skip the classic pipeline
+
         line_count = 0
         fmt = None
         sample_entry = None
@@ -221,7 +280,7 @@ def analyze(
             table.add_row("message", sample_entry.message)
             console.print(table)
 
-    asyncio.run(_run()) 
+    asyncio.run(_run())
 
 @app.command()
 def benchmark(
