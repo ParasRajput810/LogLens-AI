@@ -168,7 +168,6 @@ def test_fast_cluster_separation_positive(fast_vectors):
 
 @skip_if_no_st
 def test_deep_intra_greater_than_inter(deep_vectors):
-    """Deep mode: same-cluster logs should be more similar than cross-cluster."""
     vectors, labels = deep_vectors
     scores = intra_inter_similarity(vectors, labels)
     print(f"\n[DEEP] intra={scores['intra_mean']:.3f} inter={scores['inter_mean']:.3f} sep={scores['separation']:.3f}")
@@ -178,7 +177,6 @@ def test_deep_intra_greater_than_inter(deep_vectors):
 
 @skip_if_no_st
 def test_deep_anomaly_isolation(deep_vectors):
-    """Deep mode: anomalies should be more isolated than fast mode."""
     vectors, labels = deep_vectors
     score = anomaly_separation_score(vectors, labels)
     print(f"\n[DEEP] anomaly isolation score: {score:.3f}")
@@ -187,10 +185,6 @@ def test_deep_anomaly_isolation(deep_vectors):
 
 @skip_if_no_st
 def test_deep_beats_fast_on_separation(fast_vectors, deep_vectors):
-    """
-    Deep mode should have better cluster separation than fast mode.
-    This is the key accuracy comparison test.
-    """
     fast_scores = intra_inter_similarity(fast_vectors[0], fast_vectors[1])
     deep_scores = intra_inter_similarity(deep_vectors[0], deep_vectors[1])
 
@@ -211,12 +205,10 @@ def test_deep_beats_fast_on_separation(fast_vectors, deep_vectors):
         f"Deep separation {deep_scores['separation']:.3f} should be >= fast {fast_scores['separation']:.3f}"
 
 def benchmark_engine(engine, entries: list, runs: int = 3) -> dict:
-    """Run engine.embed() multiple times and collect timing stats."""
     times = []
     vector_shape = None
 
     for _ in range(runs):
-        # fresh engine each run to avoid cache skew
         start = time.perf_counter()
         vectors = engine.embed(entries)
         elapsed = time.perf_counter() - start
@@ -253,7 +245,6 @@ def print_benchmark_report(label: str, result: dict):
 
 
 def test_fast_benchmark_small(fixture_data):
-    """Benchmark fast mode on 100 logs."""
     entries, _ = fixture_data
     sample = entries[:100]
     result = benchmark_engine(EmbeddingEngine(), sample, runs=3)
@@ -264,17 +255,14 @@ def test_fast_benchmark_small(fixture_data):
 
 
 def test_fast_benchmark_large(fixture_data):
-    """Benchmark fast mode on full 5000 log fixture."""
     entries, _ = fixture_data
     result = benchmark_engine(EmbeddingEngine(), entries, runs=3)
     print_benchmark_report("FAST MODE — 5000 logs", result)
-    # must process at least 200 logs/sec on large corpus
     assert result["logs_per_sec"] > 200, \
         f"Too slow: {result['logs_per_sec']:.0f} logs/sec (expected >200)"
 
 
 def test_fast_latency_per_log(fixture_data):
-    """Each log should take under 5ms in fast mode."""
     entries, _ = fixture_data
     result = benchmark_engine(EmbeddingEngine(), entries[:500], runs=3)
     print_benchmark_report("FAST MODE — latency test (500 logs)", result)
@@ -284,7 +272,6 @@ def test_fast_latency_per_log(fixture_data):
 
 @skip_if_no_st
 def test_deep_benchmark_small(fixture_data):
-    """Benchmark deep mode on 100 logs."""
     from loglens.pipeline.deep_embeddings import DeepEmbeddingEngine
     entries, _ = fixture_data
     sample = entries[:100]
@@ -297,7 +284,6 @@ def test_deep_benchmark_small(fixture_data):
 
 @skip_if_no_st
 def test_deep_benchmark_large(fixture_data):
-    """Benchmark deep mode on 500 logs."""
     from loglens.pipeline.deep_embeddings import DeepEmbeddingEngine
     entries, _ = fixture_data
     sample = entries[:500]
@@ -309,10 +295,6 @@ def test_deep_benchmark_large(fixture_data):
 
 @skip_if_no_st
 def test_fast_vs_deep_speed_comparison(fixture_data):
-    """
-    Fast mode must be significantly faster than deep mode.
-    Expected: fast is at least 10x faster.
-    """
     from loglens.pipeline.deep_embeddings import DeepEmbeddingEngine
     entries, _ = fixture_data
     sample = entries[:200]
