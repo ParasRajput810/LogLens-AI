@@ -33,3 +33,5 @@ tests/fixtures/sample.log
 # OS
 .DS_Store
 Thumbs.db
+
+benchmarks/*.log

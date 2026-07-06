@@ -163,10 +163,18 @@ def build_feature_matrix(entries: Sequence[LogEntry],
 
 class SupervisedHead:
 
-    def __init__(self, class_weight: str = "balanced", max_iter: int = 1000):
-        from sklearn.linear_model import LogisticRegression
-        self.clf = LogisticRegression(class_weight=class_weight,
-                                      max_iter=max_iter)
+    def __init__(self, model: str = "rf", class_weight: str = "balanced",
+                 max_iter: int = 1000, n_estimators: int = 300,
+                 random_state: int = 0):
+        if model == "rf":
+            from sklearn.ensemble import RandomForestClassifier
+            self.clf = RandomForestClassifier(
+                n_estimators=n_estimators, class_weight=class_weight,
+                random_state=random_state)
+        else:
+            from sklearn.linear_model import LogisticRegression
+            self.clf = LogisticRegression(class_weight=class_weight,
+                                          max_iter=max_iter)
         self.fitted = False
 
     def fit(self, X: np.ndarray, y: Sequence[int]) -> "SupervisedHead":
