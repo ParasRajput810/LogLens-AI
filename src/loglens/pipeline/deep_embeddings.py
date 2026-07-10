@@ -47,8 +47,8 @@ class DeepEmbeddingEngine:
     def __init__(self,
                  batch_size: int = 256,
                  tfidf_dims: int = 32,
-                 feature_weight: float = 0.4,
-                 tfidf_weight: float = 0.2,
+                 feature_weight: float = 0.25,
+                 tfidf_weight: float = 0.15,
                  use_synonym_cache: bool = True):
         self.batch_size = batch_size                   
         self.tfidf_dims = tfidf_dims                    

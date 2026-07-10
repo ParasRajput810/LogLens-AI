@@ -10,6 +10,7 @@ from loglens.output.terminal import LiveProgress
 from loglens.pipeline.detector import detect_anomalies, cluster_summary, DetectorConfig
 from loglens.pipeline.benchmark import run_benchmark
 from loglens.pipeline.turbo import scan_file as turbo_scan
+from loglens.pipeline.templates import TemplateRegistry
 
 app = typer.Typer(
     name="loglens",
@@ -37,6 +38,7 @@ def analyze(
     limit: int = typer.Option(20, "--limit", help="Max anomalies to display (default: 20)"),
     sort_by: str = typer.Option("severity", "--sort-by", help="Sort anomalies by: severity | time | service"),
     turbo: bool = typer.Option(False, "--turbo", help="Fast multiprocess scan for huge files (byte-range + template dedup, skips embeddings)"),
+    explain: int = typer.Option(0, "--explain", help="Show top-N scored entries (flagged or not) with score and reasons — for debugging near-misses"),
 ):
     async def _run():
 
@@ -140,7 +142,16 @@ def analyze(
             engine = EmbeddingEngine()
 
         console.print(f"[bold cyan][LogLens][/bold cyan] Computing embeddings for [bold]{len(entries):,}[/bold] entries...")
-        vectors = engine.embed(entries)
+        if deep and hasattr(engine, "embed_templates"):
+            registry = TemplateRegistry(entries)
+            console.print(
+                f"[bold cyan][LogLens][/bold cyan] Unique templates: "
+                f"[bold]{len(registry):,}[/bold] "
+                f"[dim](encoding templates, not lines)[/dim]"
+            )
+            vectors = engine.embed_templates(entries, registry)
+        else:
+            vectors = engine.embed(entries)
         console.print(
             f"[bold cyan][LogLens][/bold cyan] Embeddings ready: "
             f"[bold green]shape={vectors.shape}[/bold green]"
@@ -149,6 +160,24 @@ def analyze(
         # --- anomaly detection ---
         normal, anomalies, labels = detect_anomalies(entries, vectors)
         summary = cluster_summary(labels)
+
+        if explain:
+            ranked = sorted(entries,
+                            key=lambda e: getattr(e, "anomaly_score", 0.0),
+                            reverse=True)[:explain]
+            console.print()
+            console.print(Panel(
+                "\n".join(
+                    f"[bold]{getattr(e, 'anomaly_score', 0.0):.3f}[/bold] "
+                    f"[{'red' if getattr(e, 'anomaly_score', 0) >= 0.70 else 'yellow'}]"
+                    f"[{e.level}][/] [cyan]{e.service}[/cyan] {e.message[:70]}\n"
+                    f"        [dim]{'; '.join(getattr(e, 'anomaly_reasons', [])) or 'no signals'}[/dim]"
+                    for e in ranked
+                ),
+                title=f"[bold cyan]TOP {len(ranked)} SCORED ENTRIES "
+                      f"(threshold 0.70)[/bold cyan]",
+                border_style="cyan",
+            ))
 
         # Use len(anomalies) — actual score-flagged count, not just noise points
         n_anomalies = len(anomalies)

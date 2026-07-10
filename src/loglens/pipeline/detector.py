@@ -43,18 +43,19 @@ SEVERITY_BASE: Dict[int, float] = {
     7: 0.0,                   # DEBUG/TRACE
 }
 
-# FIX 2: chronic (high-volume) severe templates are routine noise, not incidents.
-# A severe template that is a large share of its level OR very high raw count
-# gets its rarity/severity contribution damped instead of amplified.
-CHRONIC_SHARE = 0.15          # >=15% of same-level entries -> chronic
-CHRONIC_MIN_COUNT = 25        # or >=25 raw occurrences
-CHRONIC_DAMP = 0.45           # multiply severe prior + rarity by this when chronic
+
+CHRONIC_SHARE = 0.15          
+CHRONIC_MIN_COUNT = 25        
+CHRONIC_SPREAD = 0.50         
+CHRONIC_DAMP = 0.45      
 
 # FIX 3: global rarity — templates that are a tiny fraction of the WHOLE file
 # (regardless of level) get a small rarity bump so fragmented severe families
 # are not lost.
 GLOBAL_RARE_SHARE = 0.005     # <=0.5% of the whole file
 GLOBAL_RARE_BONUS = 0.18
+OUTLIER_Z_EXEMPT = 4.0
+OUTLIER_DIST_FLOOR = 0.08
 
 CATASTROPHE_PATTERNS = [
     r"kernel panic", r"\bpanic\b", r"segfault", r"sigsegv",
@@ -287,6 +288,8 @@ def detect(entries: Sequence[LogEntry],
     group_sev = np.array([get_severity(lv) for lv in group_level])
 
     group_outlier = np.zeros(n_groups, dtype=bool)
+    group_outlier_z = np.zeros(n_groups, dtype=np.float64)
+    group_outlier_dist = np.zeros(n_groups, dtype=np.float64)
     for lv in set(group_level):
         gidx = [i for i, l in enumerate(group_level) if l == lv]
         if len(gidx) < 4:
@@ -301,10 +304,14 @@ def detect(entries: Sequence[LogEntry],
         dist = 1.0 - vecs @ centroid
         mean = float(np.average(dist, weights=w))
         var = float(np.average((dist - mean) ** 2, weights=w))
-        cut = mean + 2.0 * math.sqrt(var)
+        std = math.sqrt(var)
+        cut = mean + 2.0 * std
         for j, gi in enumerate(gidx):
             if dist[j] > cut and dist[j] > 0.05:
                 group_outlier[gi] = True
+                group_outlier_z[gi] = ((dist[j] - mean) / std
+                                       if std > 1e-9 else 10.0)
+                group_outlier_dist[gi] = float(dist[j])
 
     if cfg.enable_burst:
         burst_mask, burst_note = detect_bursts(entries, cfg)
@@ -356,20 +363,21 @@ def detect(entries: Sequence[LogEntry],
                 continue                # known chronic noise: stay quiet
         group_recurring[gi] = True
 
-    level_group_totals: Dict[str, int] = {}
-    for gi, g in enumerate(registry.groups):
-        level_group_totals[group_level[gi]] = \
-            level_group_totals.get(group_level[gi], 0) + g.count
     group_chronic = np.zeros(n_groups, dtype=bool)
     group_global_rare = np.zeros(n_groups, dtype=bool)
     for gi, g in enumerate(registry.groups):
-        lvl_total = level_group_totals.get(group_level[gi], 1)
-        share_in_level = g.count / max(lvl_total, 1)
-        if group_sev[gi] <= 4 and (
-                share_in_level >= CHRONIC_SHARE or g.count >= CHRONIC_MIN_COUNT):
-            group_chronic[gi] = True
         if g.count / n <= GLOBAL_RARE_SHARE:
             group_global_rare[gi] = True
+        if group_sev[gi] > 4 or group_sev[gi] <= 2:
+            continue
+        if not (g.count / n >= CHRONIC_SHARE or g.count >= CHRONIC_MIN_COUNT):
+            continue
+        span = (g.indices[-1] - g.indices[0]) / max(n - 1, 1)
+        if span < CHRONIC_SPREAD:
+            continue
+        if bool(burst_mask[g.indices].any()):
+            continue
+        group_chronic[gi] = True
 
     scores = np.zeros(n, dtype=np.float64)
     reasons: List[List[str]] = [[] for _ in range(n)]
@@ -407,13 +415,18 @@ def detect(entries: Sequence[LogEntry],
                     f"rare pattern ({int(csize)} of {level_total} "
                     f"{levels[i]} entries)")
         if group_outlier[gi]:
-            rarity = max(rarity, 0.35)
-            entry_reasons.append(f"semantic outlier within {levels[i]} level")
+            z = group_outlier_z[gi]
+            rarity = max(rarity, min(0.35 + 0.10 * max(0.0, z - 2.0), 0.75))
+            entry_reasons.append(
+                f"semantic outlier within {levels[i]} level (z={z:.1f})")
         if g.count <= max(2, int(0.005 * level_total)):
             rarity = max(rarity, 0.40)
             if not any("rare" in r for r in entry_reasons):
                 entry_reasons.append(f"template seen only {g.count}x")
-        if sev >= 5 and gl != -1:       # NOTICE/INFO/DEBUG
+        _extreme_outlier = (group_outlier[gi]
+                            and group_outlier_z[gi] >= OUTLIER_Z_EXEMPT
+                            and group_outlier_dist[gi] > OUTLIER_DIST_FLOOR)
+        if sev >= 5 and gl != -1 and not _extreme_outlier:
             rarity *= cfg.safe_rarity_damp
         if chronic:
             rarity *= CHRONIC_DAMP
