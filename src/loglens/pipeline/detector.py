@@ -35,13 +35,26 @@ HARD_FLAG_SEVERITY = 1
 
 SEVERITY_BASE: Dict[int, float] = {
     0: 1.0, 1: 1.0,           # hard-flagged anyway
-    2: 0.75,                  # CRITICAL
-    3: 0.75,                  # ERROR
-    4: 0.50,                  # WARN
+    2: 0.70,                  # CRITICAL
+    3: 0.55,                  # ERROR  (graded down: routine errors are common)
+    4: 0.42,                  # WARN
     5: 0.08,                  # NOTICE
     6: 0.0,                   # INFO
     7: 0.0,                   # DEBUG/TRACE
 }
+
+# FIX 2: chronic (high-volume) severe templates are routine noise, not incidents.
+# A severe template that is a large share of its level OR very high raw count
+# gets its rarity/severity contribution damped instead of amplified.
+CHRONIC_SHARE = 0.15          # >=15% of same-level entries -> chronic
+CHRONIC_MIN_COUNT = 25        # or >=25 raw occurrences
+CHRONIC_DAMP = 0.45           # multiply severe prior + rarity by this when chronic
+
+# FIX 3: global rarity — templates that are a tiny fraction of the WHOLE file
+# (regardless of level) get a small rarity bump so fragmented severe families
+# are not lost.
+GLOBAL_RARE_SHARE = 0.005     # <=0.5% of the whole file
+GLOBAL_RARE_BONUS = 0.18
 
 CATASTROPHE_PATTERNS = [
     r"kernel panic", r"\bpanic\b", r"segfault", r"sigsegv",
@@ -343,6 +356,21 @@ def detect(entries: Sequence[LogEntry],
                 continue                # known chronic noise: stay quiet
         group_recurring[gi] = True
 
+    level_group_totals: Dict[str, int] = {}
+    for gi, g in enumerate(registry.groups):
+        level_group_totals[group_level[gi]] = \
+            level_group_totals.get(group_level[gi], 0) + g.count
+    group_chronic = np.zeros(n_groups, dtype=bool)
+    group_global_rare = np.zeros(n_groups, dtype=bool)
+    for gi, g in enumerate(registry.groups):
+        lvl_total = level_group_totals.get(group_level[gi], 1)
+        share_in_level = g.count / max(lvl_total, 1)
+        if group_sev[gi] <= 4 and (
+                share_in_level >= CHRONIC_SHARE or g.count >= CHRONIC_MIN_COUNT):
+            group_chronic[gi] = True
+        if g.count / n <= GLOBAL_RARE_SHARE:
+            group_global_rare[gi] = True
+
     scores = np.zeros(n, dtype=np.float64)
     reasons: List[List[str]] = [[] for _ in range(n)]
 
@@ -358,7 +386,10 @@ def detect(entries: Sequence[LogEntry],
             reasons[i] = [f"{e.level.upper()} level is always flagged"]
             continue
 
+        chronic = bool(group_chronic[gi])
         score = SEVERITY_BASE.get(sev, 0.15)
+        if chronic:
+            score *= CHRONIC_DAMP        # routine, high-volume severe pattern
         if score > 0:
             entry_reasons.append(f"severity {e.level.upper()}")
 
@@ -384,7 +415,17 @@ def detect(entries: Sequence[LogEntry],
                 entry_reasons.append(f"template seen only {g.count}x")
         if sev >= 5 and gl != -1:       # NOTICE/INFO/DEBUG
             rarity *= cfg.safe_rarity_damp
+        if chronic:
+            rarity *= CHRONIC_DAMP
+            if not any("chronic" in r for r in entry_reasons):
+                entry_reasons.append(
+                    f"chronic pattern ({g.count}x) — damped as routine noise")
         score += rarity
+
+        if group_global_rare[gi] and sev <= 4 and not chronic:
+            score += GLOBAL_RARE_BONUS
+            entry_reasons.append(
+                f"globally rare ({g.count/n:.2%} of file)")
 
         if burst_mask[i]:
             score += 0.50
@@ -478,6 +519,8 @@ def detect(entries: Sequence[LogEntry],
         "flag_threshold": cfg.flag_threshold,
         "threshold_used": float(threshold),
         "auto_threshold": cfg.auto_threshold,
+        "chronic_templates": int(group_chronic.sum()),
+        "global_rare_templates": int(group_global_rare.sum()),
     }
     if burst_note:
         meta["burst_note"] = burst_note

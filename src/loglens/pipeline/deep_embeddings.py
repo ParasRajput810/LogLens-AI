@@ -114,5 +114,18 @@ class DeepEmbeddingEngine:
         return _row_normalize(combined)
 
 
+    def embed_templates(self, entries: List[LogEntry],
+                        registry) -> np.ndarray:
+        if not entries:
+            return np.zeros((0, 384 + self.tfidf_dims + N_LOG_FEATURES),
+                            dtype=np.float32)
+        reps = [entries[i] for i in registry.representative_indices()]
+        group_vecs = self.embed(reps)                 # (n_groups, dim)
+        out = np.empty((len(entries), group_vecs.shape[1]), dtype=np.float32)
+        for gi, g in enumerate(registry.groups):
+            out[g.indices] = group_vecs[gi]
+        return out
+
+
 def get_deep_engine() -> DeepEmbeddingEngine:
     return DeepEmbeddingEngine()
