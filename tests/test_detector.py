@@ -50,7 +50,10 @@ def test_critical_always_flagged():
     vecs = dummy_vectors(len(entries))
     res = detect(entries, vecs)
     assert res.flagged[-1], "FATAL entry should be flagged"
-    assert res.scores[-1] == 1.0
+    # De-saturated scoring: guaranteed-flag levels stay above threshold but
+    # are no longer pinned to exactly 1.0 (evidence differentiates them).
+    assert res.scores[-1] >= 0.85
+    assert res.scores[-1] < 1.0
 
 
 def test_routine_info_not_flooding_anomalies():
@@ -144,3 +147,31 @@ def test_auto_threshold_config_toggle():
     res = detect(entries, vecs, cfg)
     assert "threshold_used" in res.meta
     assert res.meta["auto_threshold"] is True
+
+def test_scores_never_saturate_to_identical_ones():
+    entries = [make_entry(f"routine ok {i % 3}", "INFO") for i in range(40)]
+    entries.append(make_entry("disk failure detected raid degraded", "FATAL"))
+    entries.append(make_entry("oom killer invoked pid 4242", "FATAL"))
+    for _ in range(20):   # repetitive FATAL drone vs the two novel ones
+        entries.append(make_entry("watchdog heartbeat missed", "FATAL"))
+    res = detect(entries, dummy_vectors(len(entries)))
+    fatal_scores = [float(res.scores[i]) for i, e in enumerate(entries)
+                    if e.level == "FATAL"]
+    assert all(s < 1.0 for s in fatal_scores), "no score may saturate at 1.0"
+    assert all(res.flagged[i] for i, e in enumerate(entries)
+               if e.level == "FATAL"), "hard-flag levels stay flagged"
+
+
+def test_history_damp_never_hits_tight_bursts():
+    entries = []
+    for _ in range(30):    # early tight ERROR burst = early incident
+        entries.append(make_entry("raid controller failure disk offline",
+                                  "ERROR"))
+    for i in range(400):
+        entries.append(make_entry(f"request ok {i % 7}", "INFO"))
+    res = detect(entries, dummy_vectors(len(entries)))
+    err_flags = [bool(res.flagged[i]) for i, e in enumerate(entries)
+                 if e.level == "ERROR"]
+    assert all(err_flags), "early burst must stay flagged"
+    assert not any("routine by own history" in r
+                   for i in range(30) for r in res.reasons[i])

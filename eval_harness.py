@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time
+import numpy as np
 from typing import List, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
@@ -110,6 +111,35 @@ def main():
         from loglens.output.report import write_report
         write_report(first, args.html, title=f"LogLens — {args.tasks[0]}")
         print(f"HTML report -> {args.html}")
+
+
+
+def threshold_sweep(scores, y_true, recall_floor: float = 0.95,
+                    verbose: bool = True):
+    s = np.asarray(scores, dtype=float)
+    y = np.asarray(y_true, dtype=bool)
+    best_f1 = best_fl = (0.0, 0.0, 0.0, -1.0, 0)
+    rows = []
+    for th in sorted(set(np.round(s, 4)), reverse=True):
+        p = s >= th
+        tp = int((p & y).sum()); fp = int((p & ~y).sum())
+        fn = int((~p & y).sum())
+        pr = tp / max(tp + fp, 1); rc = tp / max(tp + fn, 1)
+        f1 = 2 * pr * rc / max(pr + rc, 1e-9)
+        rows.append((th, pr, rc, f1, int(p.sum())))
+        if f1 > best_f1[3]:
+            best_f1 = rows[-1]
+        if rc >= recall_floor and f1 > best_fl[3]:
+            best_fl = rows[-1]
+    if verbose:
+        print(f"{'threshold':>10} {'P':>7} {'R':>7} {'F1':>7} {'flagged':>8}")
+        for tag, row in (("F1-optimal", best_f1),
+                         (f"best @ R>={recall_floor}", best_fl)):
+            th, pr, rc, f1, fl = row
+            print(f"{tag:<22} th={th:.4f} P={pr:.3f} R={rc:.3f} "
+                  f"F1={f1:.3f} flagged={fl}")
+    return {"best_f1": best_f1, "best_recall_floor": best_fl,
+            "curve": rows}
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ _MASKS: List[Tuple[re.Pattern, str]] = [
     (re.compile(r"\b\d+(\.\d+)?\b"), "<num>"),
     (re.compile(r'"[^"]*"'), "<str>"),
     (re.compile(r"'[^']*'"), "<str>"),
+    (re.compile(r"\S*\d\S*"), "<id>"),
 ]
 
 _WS = re.compile(r"\s+")

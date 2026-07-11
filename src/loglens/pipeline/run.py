@@ -20,6 +20,7 @@ class RunConfig:
     sensitivity: str = "normal"        
     template_level: bool = True       
     auto_threshold: bool = False
+    threshold: Optional[float] = None  
     eps: Optional[float] = None
     min_samples: int = 4
 
@@ -43,6 +44,8 @@ def run(entries: Sequence[LogEntry],
         min_samples=cfg.min_samples,
     )
     det_cfg.auto_threshold = cfg.auto_threshold
+    if cfg.threshold is not None:
+        det_cfg.flag_threshold = float(cfg.threshold)
 
     if not entries:
         return detect(entries, np.zeros((0, 1), dtype=np.float32),

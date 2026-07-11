@@ -57,6 +57,23 @@ GLOBAL_RARE_BONUS = 0.18
 OUTLIER_Z_EXEMPT = 4.0
 OUTLIER_DIST_FLOOR = 0.08
 
+SOFTCAP_START = 0.80
+SOFTCAP_TAU = 0.60
+
+
+HISTORY_HEAD = 0.25          
+HISTORY_MIN_COUNT = 5         
+HISTORY_MIN_SPAN = 0.40       
+HISTORY_MAX_DAMP = 0.45       
+
+
+def soft_cap(raw: float) -> float:
+    if raw <= SOFTCAP_START:
+        return max(0.0, raw)
+    return SOFTCAP_START + (1.0 - SOFTCAP_START) * (
+        1.0 - math.exp(-(raw - SOFTCAP_START) / SOFTCAP_TAU))
+
+
 CATASTROPHE_PATTERNS = [
     r"kernel panic", r"\bpanic\b", r"segfault", r"sigsegv",
     r"data loss", r"\bcorrupt\w*", r"split[- ]brain", r"power failure",
@@ -333,6 +350,13 @@ def detect(entries: Sequence[LogEntry],
 
     recurring_cut = max(cfg.recurring_min, int(n * cfg.recurring_share))
     group_recurring = np.zeros(n_groups, dtype=bool)
+    group_span = np.zeros(n_groups, dtype=np.float64)
+    group_history = np.zeros(n_groups, dtype=np.float64)   # head presence
+    head_cut = int(n * HISTORY_HEAD)
+    for gi, g in enumerate(registry.groups):
+        if g.count > 1:
+            group_span[gi] = (g.indices[-1] - g.indices[0]) / max(n - 1, 1)
+        group_history[gi] = sum(1 for i in g.indices if i < head_cut) / g.count
 
     baseline_templates: Dict[str, int] = {}
     baseline_total = 0
@@ -389,17 +413,26 @@ def detect(entries: Sequence[LogEntry],
         gl = int(group_labels[gi])
         entry_reasons: List[str] = []
 
-        if sev <= HARD_FLAG_SEVERITY:
-            scores[i] = 1.0
-            reasons[i] = [f"{e.level.upper()} level is always flagged"]
-            continue
-
         chronic = bool(group_chronic[gi])
-        score = SEVERITY_BASE.get(sev, 0.15)
-        if chronic:
-            score *= CHRONIC_DAMP        # routine, high-volume severe pattern
-        if score > 0:
-            entry_reasons.append(f"severity {e.level.upper()}")
+        if sev <= HARD_FLAG_SEVERITY:
+            score = 1.0
+            entry_reasons.append(f"{e.level.upper()} level is always flagged")
+        else:
+            score = SEVERITY_BASE.get(sev, 0.15)
+            if chronic:
+                score *= CHRONIC_DAMP    # routine, high-volume severe pattern
+            if (3 <= sev <= 4 and g.count >= HISTORY_MIN_COUNT
+                    and group_span[gi] >= HISTORY_MIN_SPAN):
+                hp = group_history[gi]
+                routine = min(1.0, max(0.0, (hp - HISTORY_HEAD)
+                                       / (1.0 - HISTORY_HEAD)))
+                if routine > 0:
+                    score *= (1.0 - HISTORY_MAX_DAMP * routine)
+                    entry_reasons.append(
+                        f"routine by own history "
+                        f"({hp:.0%} of occurrences in leading window)")
+            if score > 0:
+                entry_reasons.append(f"severity {e.level.upper()}")
 
         level_total = level_totals.get(levels[i], 1)
         dyn_threshold = max(cfg.rare_min, int(level_total * cfg.rare_pct))
@@ -452,9 +485,11 @@ def detect(entries: Sequence[LogEntry],
                 f"flood: pattern is {g.count / n:.0%} of the whole file")
 
         if group_recurring[gi]:
-            score += 0.18
+            conc = (g.count / (g.count + 8.0)) * (1.0 - group_span[gi])
+            score += 0.02 + 0.25 * conc
             entry_reasons.append(
-                f"recurring {e.level.upper()} pattern ({g.count}x)")
+                f"recurring {e.level.upper()} pattern "
+                f"({g.count}x, concentration {conc:.2f})")
 
         if sev <= 4 and _CATASTROPHE_RE.search(e.message):
             score += 0.20
@@ -471,7 +506,7 @@ def detect(entries: Sequence[LogEntry],
             score += 0.30
             entry_reasons.append("frequency surge vs baseline (>10x)")
 
-        scores[i] = min(1.0, score)
+        scores[i] = soft_cap(score)
         reasons[i] = entry_reasons
 
     threshold = cfg.flag_threshold
