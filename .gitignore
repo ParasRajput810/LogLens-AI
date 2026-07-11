@@ -12,7 +12,8 @@ build/
 venv/
 .venv/
 env/
-
+data/
+benchmark_labeled.py
 # Test fixtures (generated files — too large for git)
 tests/fixtures/large_sample.log
 tests/fixtures/large_sample_labels.json
