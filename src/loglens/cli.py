@@ -1,16 +1,28 @@
 import asyncio
+import functools
 import typer
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
+from rich.markdown import Markdown
+
+from loglens.models import LogEntry
 from loglens.pipeline.ingestion import stream_lines
 from loglens.pipeline.parser import detect_format, parse_line
 from loglens.pipeline.worker import run_worker_pool
 from loglens.output.terminal import LiveProgress
+from loglens.output.html_report import render_html_report
 from loglens.pipeline.detector import detect_anomalies, cluster_summary, DetectorConfig
 from loglens.pipeline.benchmark import run_benchmark
 from loglens.pipeline.turbo import scan_file as turbo_scan
 from loglens.pipeline.templates import TemplateRegistry
+from loglens.pipeline.embeddings import EmbeddingEngine
+from loglens.llm import LLMConfig, LLMError, run_rca, run_ask, save_report
+
+try:
+    from loglens.pipeline.deep_embeddings import DeepEmbeddingEngine
+except ImportError:
+    DeepEmbeddingEngine = None
 
 app = typer.Typer(
     name="loglens",
@@ -28,6 +40,64 @@ def version():
 def hello():
     console.print("[bold green] LogLens is alive![/bold green] Let's analyze some logs.")
 
+
+def _print_llm_config_hint():
+    console.print(
+        "[dim]Configure with env vars: LOGLENS_LLM_PROVIDER (openai|azure|groq), "
+        "LOGLENS_LLM_API_KEY, LOGLENS_LLM_MODEL — or flags --provider/--api-key/--llm-model.[/dim]"
+    )
+
+
+def _do_rca(rca_input, scores, reasons, source, provider, llm_model, api_key, rca_out=""):
+    try:
+        cfg = LLMConfig.from_env(provider=provider, model=llm_model, api_key=api_key)
+        console.print(
+            f"\n[bold cyan][LogLens][/bold cyan] 🤖 Running AI root-cause analysis via "
+            f"[bold]{cfg.provider}[/bold] ([dim]{cfg.model}[/dim])..."
+        )
+        result = run_rca(rca_input, cfg, scores=scores, reasons=reasons, source_name=source)
+        console.print()
+        console.print(Panel(
+            Markdown(result.report),
+            title=f"🧠 AI Root-Cause Analysis ({result.provider} / {result.model})",
+            border_style="cyan",
+        ))
+        u = result.usage
+        console.print(
+            f"[dim]Privacy: sent {result.anomalies_sent} anomaly summaries to the LLM — "
+            f"never the full log file. "
+            f"Tokens: {u.total_tokens:,} (prompt {u.prompt_tokens:,} / completion {u.completion_tokens:,})[/dim]"
+        )
+        if rca_out:
+            save_report(result, rca_out, source_name=source)
+            console.print(f"[bold cyan][LogLens][/bold cyan] RCA report saved: [green]{rca_out}[/green]")
+        return result
+    except LLMError as e:
+        console.print(f"[bold red][LogLens][/bold red] RCA failed: {e}")
+        _print_llm_config_hint()
+        return None
+
+
+def _write_html(html_out, source, total_lines, anomalies, rca_result=None):
+    level_counts: dict = {}
+    for a in anomalies:
+        lvl = a.level.upper()
+        level_counts[lvl] = level_counts.get(lvl, 0) + 1
+    rca_md = rca_result.report if rca_result else None
+    rca_meta = (
+        {"provider": rca_result.provider, "model": rca_result.model,
+         "tokens": rca_result.usage.total_tokens}
+        if rca_result else None
+    )
+    html_doc = render_html_report(
+        source=source, total_lines=total_lines, anomalies=anomalies,
+        level_counts=level_counts, rca_markdown=rca_md, rca_meta=rca_meta,
+    )
+    with open(html_out, "w", encoding="utf-8") as f:
+        f.write(html_doc)
+    console.print(f"[bold cyan][LogLens][/bold cyan] HTML report saved: [green]{html_out}[/green]")
+
+
 @app.command()
 def analyze(
     source: str = typer.Option(..., help="Log source: file path, URL, or stdin"),
@@ -39,13 +109,18 @@ def analyze(
     sort_by: str = typer.Option("severity", "--sort-by", help="Sort anomalies by: severity | time | service"),
     turbo: bool = typer.Option(False, "--turbo", help="Fast multiprocess scan for huge files (byte-range + template dedup, skips embeddings)"),
     explain: int = typer.Option(0, "--explain", help="Show top-N scored entries (flagged or not) with score and reasons — for debugging near-misses"),
+    rca: bool = typer.Option(False, "--rca", help="AI root-cause analysis of detected anomalies (requires LLM key: openai | azure | groq)"),
+    provider: str = typer.Option("", "--provider", help="LLM provider: openai | azure | groq (or env LOGLENS_LLM_PROVIDER)"),
+    llm_model: str = typer.Option("", "--llm-model", help="LLM model / Azure deployment name (or env LOGLENS_LLM_MODEL)"),
+    api_key: str = typer.Option("", "--api-key", help="LLM API key (prefer env LOGLENS_LLM_API_KEY)"),
+    rca_out: str = typer.Option("", "--rca-out", help="Save the RCA report to a markdown file (e.g. rca_report.md)"),
+    html_out: str = typer.Option("", "--html", help="Save a standalone HTML report (e.g. report.html). Includes RCA if --rca is set."),
 ):
     async def _run():
 
         if turbo:
             console.print(f"\n[bold cyan][LogLens][/bold cyan] Source: [yellow]{source}[/yellow]")
             console.print("[bold cyan][LogLens][/bold cyan] Mode: [bold magenta]⚡ Turbo (parallel scan)[/bold magenta]")
-            import functools
             loop = asyncio.get_event_loop()
             res = await loop.run_in_executor(
                 None,
@@ -95,6 +170,28 @@ def analyze(
                     )
             else:
                 console.print("\n[bold green] No anomalies detected![/bold green]")
+
+            rca_result = None
+            rca_entries = []
+            if anomalies:
+                rca_entries = [
+                    LogEntry(
+                        level=a.level,
+                        service=a.service,
+                        message=f"{a.sample} (occurred ×{a.count:,}, score {a.score})",
+                        raw=a.sample,
+                    )
+                    for a in anomalies
+                ]
+
+            if rca and rca_entries:
+                rca_result = _do_rca(rca_entries, [], [], source, provider, llm_model, api_key, rca_out)
+            elif rca:
+                console.print("[dim]RCA skipped — no anomalies to analyze.[/dim]")
+
+            if html_out:
+                _write_html(html_out, source, res.parsed_lines, rca_entries, rca_result)
+
             return   # turbo done — skip the classic pipeline
 
         line_count = 0
@@ -127,18 +224,15 @@ def analyze(
 
         if deep:
             console.print("[bold cyan][LogLens][/bold cyan] Mode: [bold magenta] Deep (neural embeddings)[/bold magenta]")
-            try:
-                from loglens.pipeline.deep_embeddings import DeepEmbeddingEngine
-                engine = DeepEmbeddingEngine()
-            except ImportError:
+            if DeepEmbeddingEngine is None:
                 console.print(
                     "[bold red]Deep mode requires sentence-transformers.[/bold red]\n"
                     "Install with: [yellow]pip install sentence-transformers[/yellow]"
                 )
                 raise typer.Exit(code=1)
+            engine = DeepEmbeddingEngine()
         else:
             console.print("[bold cyan][LogLens][/bold cyan] Mode: [bold green] Fast (TF-IDF embeddings)[/bold green]")
-            from loglens.pipeline.embeddings import EmbeddingEngine
             engine = EmbeddingEngine()
 
         console.print(f"[bold cyan][LogLens][/bold cyan] Computing embeddings for [bold]{len(entries):,}[/bold] entries...")
@@ -299,6 +393,27 @@ def analyze(
         else:
             console.print("\n[bold green] No anomalies detected![/bold green]")
 
+        # --- AI root-cause analysis (classic path) ---
+        rca_result = None
+        rca_input = []
+        if filtered_anomalies:
+            rca_input = sorted(
+                filtered_anomalies,
+                key=lambda a: (_severity(a), getattr(a, "anomaly_score", 0.0)),
+                reverse=True,
+            )
+        if rca:
+            if rca_input:
+                scores = [getattr(a, "anomaly_score", 0.0) for a in rca_input]
+                reasons = ["; ".join(getattr(a, "anomaly_reasons", [])) for a in rca_input]
+                rca_result = _do_rca(rca_input, scores, reasons, source, provider, llm_model, api_key, rca_out)
+            else:
+                console.print("[dim]RCA skipped — no anomalies to analyze.[/dim]")
+
+        # --- HTML report ---
+        if html_out:
+            _write_html(html_out, source, len(entries), rca_input or filtered_anomalies, rca_result)
+
         if verbose and sample_entry:
             table = Table(title="Sample Parsed Entry")
             table.add_column("Field", style="cyan")
@@ -310,6 +425,75 @@ def analyze(
             console.print(table)
 
     asyncio.run(_run())
+
+
+@app.command()
+def ask(
+    question: str = typer.Argument(..., help="Free-form question about the log, e.g. \"why did db-service degrade?\""),
+    source: str = typer.Option(..., help="Log source: file path"),
+    deep: bool = typer.Option(False, "--deep", help="Use neural embeddings for detection"),
+    provider: str = typer.Option("", "--provider", help="LLM provider: openai | azure | groq"),
+    llm_model: str = typer.Option("", "--llm-model", help="LLM model / Azure deployment name"),
+    api_key: str = typer.Option("", "--api-key", help="LLM API key (prefer env LOGLENS_LLM_API_KEY)"),
+):
+
+    async def _run():
+        console.print(f"\n[bold cyan][LogLens][/bold cyan] Source: [yellow]{source}[/yellow]")
+        entries = []
+        fmt = None
+        async for line in stream_lines(source):
+            if fmt is None:
+                fmt = detect_format(line)
+            entry = parse_line(line, fmt)
+            if entry:
+                entries.append(entry)
+        if not entries:
+            console.print("[bold red]No valid log entries found.[/bold red]")
+            raise typer.Exit(code=1)
+
+        if deep:
+            if DeepEmbeddingEngine is None:
+                console.print(
+                    "[bold red]Deep mode requires sentence-transformers.[/bold red]\n"
+                    "Install with: [yellow]pip install sentence-transformers[/yellow]"
+                )
+                raise typer.Exit(code=1)
+            engine = DeepEmbeddingEngine()
+            registry = TemplateRegistry(entries)
+            vectors = engine.embed_templates(entries, registry)
+        else:
+            engine = EmbeddingEngine()
+            vectors = engine.embed(entries)
+
+        console.print(f"[bold cyan][LogLens][/bold cyan] Detecting anomalies locally on [bold]{len(entries):,}[/bold] entries...")
+        normal, anomalies, labels = detect_anomalies(entries, vectors)
+        console.print(f"[bold cyan][LogLens][/bold cyan] Anomalies found: [bold red]{len(anomalies):,}[/bold red]")
+
+        try:
+            cfg = LLMConfig.from_env(provider=provider, model=llm_model, api_key=api_key)
+            console.print(f"[bold cyan][LogLens][/bold cyan] 🤖 Asking [bold]{cfg.provider}[/bold] ([dim]{cfg.model}[/dim])...")
+            ranked = sorted(anomalies, key=lambda a: getattr(a, "anomaly_score", 0.0), reverse=True)
+            scores = [getattr(a, "anomaly_score", 0.0) for a in ranked]
+            reasons = ["; ".join(getattr(a, "anomaly_reasons", [])) for a in ranked]
+            result = run_ask(question, ranked, cfg, scores=scores, reasons=reasons, source_name=source)
+            console.print()
+            console.print(Panel(
+                Markdown(result.report),
+                title=f"💬 {question[:80]}",
+                border_style="cyan",
+            ))
+            u = result.usage
+            console.print(
+                f"[dim]Sent {result.anomalies_sent} anomaly summaries. "
+                f"Tokens: {u.total_tokens:,} (prompt {u.prompt_tokens:,} / completion {u.completion_tokens:,})[/dim]"
+            )
+        except LLMError as e:
+            console.print(f"[bold red][LogLens][/bold red] Ask failed: {e}")
+            _print_llm_config_hint()
+            raise typer.Exit(code=1)
+
+    asyncio.run(_run())
+
 
 @app.command()
 def benchmark(
