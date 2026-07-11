@@ -4,7 +4,7 @@
 
 **AI-powered log anomaly detection that reads your logs like a senior engineer.**
 
-*Detects anomalies by meaning, explains them in plain English, runs 100% local - zero setup, zero cloud, $0/GB.*
+*Detects anomalies by meaning, explains them in plain English, groups them into incidents, and runs 100% local -zero setup, zero cloud, $0/GB.*
 
 `pip install loglens` → first insight in seconds.
 
@@ -14,7 +14,7 @@
 
 ## Why LogLens AI stands out
 
-Most log platforms give you a score and a bill. LogLens AI gives you **published, reproducible accuracy** - something no major platform does.
+Most log platforms give you a score and a bill. LogLens AI gives you **published, reproducible accuracy** -something no major platform does -plus **explainable, grouped incidents** and an **optional AI root-cause layer**.
 
 |  | **LogLens AI** | Splunk | Datadog | Elastic ML | DeepLog (research) |
 |---|---|---|---|---|---|
@@ -23,19 +23,20 @@ Most log platforms give you a score and a bill. LogLens AI gives you **published
 | Runs offline / air-gapped | ✅ | partial | ❌ | partial | ✅ |
 | Published, reproducible accuracy | ✅ **F1 0.95** | ❌ | ❌ | ❌ | ✅ (HDFS only) |
 | Explains *why* a line is anomalous | ✅ | scores only | scores only | scores only | ❌ |
-| Anomaly detection free & built-in | ✅ | paid add-on | paid | paid tier | - |
-| From-scratch algorithms (no ML deps in core) | ✅ | - | - | - | ❌ |
+| Groups repeats into incident families | ✅ | partial | partial | ❌ | ❌ |
+| AI root-cause narratives (BYO key) | ✅ | paid add-on | paid | ❌ | ❌ |
+| Self-contained offline HTML report | ✅ | ❌ | ❌ | ❌ | ❌ |
 
-> **The one-liner:** *The only log anomaly detector with published, reproducible F1 - free, local, and explained.*
+> **The one-liner:** *The only log anomaly detector with published, reproducible F1 -free, local, explained, and grouped into incidents.*
 
 ---
 
 ## 📊 Benchmark results (real production logs)
 
 All numbers measured on real-world labeled datasets from [Loghub](https://github.com/logpai/loghub).
-Fully reproducible - see [BENCHMARK.md](BENCHMARK.md).
+Fully reproducible -see [BENCHMARK.md](BENCHMARK.md).
 
-### Accuracy - Loghub BGL (500,000 lines, 206,847 labeled alerts)
+### Accuracy -Loghub BGL (500,000 lines, 206,847 labeled alerts)
 
 | Mode | Engine | Precision | Recall | F1 | Speed | Missed alerts |
 |------|--------|-----------|--------|----|-------|---------------|
@@ -44,39 +45,32 @@ Fully reproducible - see [BENCHMARK.md](BENCHMARK.md).
 | **deep** | AI semantic embeddings | **0.917** | **1.000** | **0.957** | ~3,400 l/s | **0** |
 
 - **Zero false negatives** across all 206,847 alerts, in every mode.
-- **Deep (AI) mode measurably beats the baseline** - semantic embeddings cut false positives by ~18% (22,810 → 18,624). Provable AI value, not marketing.
-- **Turbo matches fast-mode accuracy exactly** at higher throughput - speed with no accuracy tradeoff.
+- **Deep (AI) mode measurably beats the baseline** -semantic embeddings cut false positives by ~18%. Provable AI value, not marketing.
+- **Turbo matches fast-mode accuracy exactly** at higher throughput -speed with no accuracy tradeoff.
 
-### Cross-dataset generality - no retuning
+### Speed benchmark -`loglens bench`
 
-Threshold tuned on BGL, applied **unchanged** to a completely different system
-(Sandia Thunderbird cluster, 500,000 all-normal lines):
+Measured with the built-in `bench` command (`demo_incident.log`, 810 entries):
+
+| Mode | Lines | Time (s) | Lines/s | Anomaly families | Peak RAM |
+|------|-------|----------|---------|------------------|----------|
+| **⚡ turbo** | 810 | 0.054 | **14,999** | **8** | 169 MB |
+| **🟢 fast** | 810 | 0.601 | 1,348 | (170 raw events) | 169 MB |
+
+Turbo collapses 810 lines into **8 incident families** -the "insight in seconds on one box" story.
+
+### Cross-dataset generality -no retuning
+
+Threshold tuned on BGL, applied **unchanged** to the Sandia Thunderbird cluster (500,000 all-normal lines):
 
 | Mode | False-alarm rate | Specificity | Speed |
 |------|------------------|-------------|-------|
 | fast | 0.68% | **99.32%** | ~8,600 l/s |
 | deep | 0.67% | **99.33%** | ~1,800 l/s |
 
-### False-alarm stress test - 9 real-world log types, one universal threshold
+### Needle-in-a-haystack -injected incident recall
 
-Routine operational logs where every flag is noise. Zero per-format tuning.
-
-| Log type | False-alarm rate | | Log type | False-alarm rate |
-|---|---|---|---|---|
-| Spark | **0.00%** ✅ | | Apache | 1.20% ✅ |
-| HDFS | **0.00%** ✅ | | Mac | 8.15% ⚠️ |
-| OpenStack | 0.05% ✅ | | Linux | 13.25% ⚠️ |
-| HealthApp | 0.20% ✅ | | Zookeeper | 61.6% * |
-| Thunderbird | 0.60% ✅ | | | |
-
-**7 of 9 formats under 1.2% false alarms.** (*) The Zookeeper capture is a genuine
-connection-failure election storm (66% of lines are failure WARNs) - flagging it is
-correct behavior. Linux/Mac chronic-noise damping is a documented roadmap item.
-
-### Needle-in-a-haystack - injected incident recall
-
-5 unique critical incidents (kernel panic, OOM, disk failure, security breach, data
-corruption) injected into routine logs across 6 different formats:
+5 unique critical incidents (kernel panic, OOM, disk failure, security breach, data corruption) injected into routine logs across 6 formats:
 
 | Format | Caught | Format | Caught |
 |---|---|---|---|
@@ -84,24 +78,27 @@ corruption) injected into routine logs across 6 different formats:
 | Spark | 5/5 | OpenStack | 5/5 |
 | HDFS | 5/5 | Thunderbird | 5/5 |
 
-**30/30 injected incidents detected - 100% recall across every format, zero configuration.**
+**30/30 injected incidents detected -100% recall across every format, zero configuration.**
 
 ---
 
 ## ✨ Features
 
-- 🧠 **Three detection engines, one scoring model**
-  - `fast` - from-scratch statistical detector (TF-IDF template embeddings, weighted density clustering, severity/rarity/chronic scoring). No ML libraries in the core.
-  - `turbo` - the same accuracy, optimized for throughput.
-  - `deep` - transformer-based semantic embeddings that understand log *meaning*, not just keywords. Runs on unique templates only, so it stays fast.
-- 💬 **Explainable anomalies** - every flag comes with a plain-language reason (rare + severe + burst context), not just a score.
-- 📄 **10+ log formats auto-detected** - Apache, Linux, Mac, HDFS, Spark, Zookeeper, OpenStack, Thunderbird, BGL, HealthApp and generic formats. No config, ever.
-- 🎯 **Template mining** - automatic log templating; chronic/noisy patterns are learned and damped, rare severe patterns are boosted.
-- 📈 **Calibrated continuous scoring** - de-saturated scores with a single universal threshold (default 0.82) that generalizes across systems, plus sensitivity presets.
-- 🔌 **Flexible ingestion** - files, stdin, HTTP.
-- 🖥️ **Terminal + report output** - clean CLI results and report generation.
-- 🔒 **100% local & private** - no cloud, no data leaves your machine, air-gap friendly.
-- 🧪 **Reproducible benchmark harness included** - `benchmark_labeled.py` runs the exact published tests. Don't trust us; run it yourself.
+- 🧠 **Three detection engines, one unified scoring model**
+  - `fast` -from-scratch statistical detector (TF-IDF template embeddings, weighted density clustering, severity/rarity/chronic scoring). No ML libraries in the core.
+  - `turbo` -the same accuracy, optimized for throughput via parallel byte-range scanning and template dedup.
+  - `deep` -transformer-based semantic embeddings that understand log *meaning*. Runs on unique templates only, so it stays fast.
+- 🧩 **Anomaly families (template grouping)** -repeated anomalies are collapsed into a single incident with an `×N` count, across *all* modes. No more scrolling through 200 identical errors.
+- ⚖️ **Recalibrated scoring** -graded severity priors, **chronic-pattern damping** (routine errors are suppressed), and a **global-rarity bonus** (rare severe events are boosted). Cuts false positives dramatically while keeping 1.0 recall on real incidents.
+- 💬 **Explainable anomalies** -every flag comes with a plain-language reason (rare + severe + burst context), not just a score.
+- 🤖 **AI root-cause analysis (`--rca`)** -optional, bring-your-own-key (OpenAI / Azure / Groq). Sends only **grouped anomaly summaries** to the LLM -never your full log file -so it's cheap, private, and coherent.
+- ❓ **Natural-language Q&A (`loglens ask`)** -ask "why did db-service degrade?" and get an answer grounded in the detected anomalies.
+- 📈 **Self-contained HTML report (`--html`)** -a dark-themed dashboard with severity breakdown, per-service breakdown, and score distribution. Fully offline (no CDN), embeds the RCA narrative when `--rca` is used.
+- ⏱️ **Speed benchmark (`loglens bench`)** -lines/sec, time-to-insight, and peak RAM across modes, exportable to markdown.
+- 📄 **10+ log formats auto-detected** -Apache, Linux, Mac, HDFS, Spark, Zookeeper, OpenStack, Thunderbird, BGL, HealthApp and generic formats. No config, ever.
+- 🔌 **Flexible ingestion** -files, stdin, HTTP.
+- 🔒 **100% local & private** -detection never leaves your machine; air-gap friendly.
+- 🧪 **Reproducible benchmark harness included** -don't trust us; run it yourself.
 
 ---
 
@@ -110,52 +107,52 @@ corruption) injected into routine logs across 6 different formats:
 ```bash
 pip install loglens
 
-# analyze any log file - format auto-detected
-loglens analyze app.log
+# analyze any log file -format auto-detected
+loglens analyze --source app.log
 
-# maximum throughput
-loglens analyze app.log --mode turbo
+# maximum throughput on huge files
+loglens analyze --source app.log --turbo
 
 # AI semantic mode (best precision)
-loglens analyze app.log --mode deep
+loglens analyze --source app.log --deep
+
+# full incident workflow: turbo scan + AI root-cause + offline HTML report
+loglens analyze --source app.log --turbo --rca --html report.html
+
+# benchmark speed across modes
+loglens bench app.log --modes fast,turbo,deep --out BENCHMARK.md
 ```
 
-Reproduce the benchmarks:
-
-```bash
-# datasets from https://github.com/logpai/loghub
-python benchmark_labeled.py --file data/bgl/BGL.log --limit 500000 --sweep --threshold 0.82 --mode fast
-python benchmark_labeled.py --file data/bgl/BGL.log --limit 500000 --sweep --threshold 0.82 --mode deep
-```
+📖 **Full command reference:** see [DOCUMENTATION.md](DOCUMENTATION.md).
 
 ---
 
 ## 🧭 How it works
 
-1. **Parse** - streaming parser auto-detects the log format.
-2. **Template** - messages are mined into templates; volume statistics per template.
-3. **Embed** - templates are embedded (TF-IDF in fast/turbo, transformer in deep) - one vector per unique template for speed.
-4. **Detect** - an ensemble score blends severity prior, template rarity, embedding distance, chronic damping and global-rarity bonus into a calibrated continuous score.
-5. **Explain** - every anomaly is reported with its human-readable reason.
+1. **Parse** -streaming parser auto-detects the log format.
+2. **Template** -messages are mined into templates; volume statistics per template.
+3. **Embed** -templates are embedded (TF-IDF in fast/turbo, transformer in deep) -one vector per unique template for speed.
+4. **Detect** -an ensemble score blends severity prior, template rarity, embedding distance, chronic damping and global-rarity bonus into a calibrated continuous score.
+5. **Group** -repeated anomalies are collapsed into incident families (`×N`).
+6. **Explain** -every anomaly is reported with its human-readable reason; optionally an LLM writes the root-cause narrative.
 
 ---
 
 ## 🗺️ Roadmap
 
-- 🤖 AI root-cause narratives & `loglens ask` - natural-language Q&A over your logs (bring-your-own-key LLM layer; detection stays local)
-- 📊 One-command HTML incident report
-- 👀 `loglens watch` - live tail anomaly alerts
-- 🔧 Chronic-noise damping improvements for Linux/Mac daemon logs
+- 👀 `loglens watch` -live tail anomaly alerts.
+- 🔧 Chronic-noise damping improvements for Linux/Mac daemon logs.
+- 📦 Prebuilt Docker image and GitHub Action.
 
 ---
 
 ## 📜 Honesty notes
 
 - Accuracy measured on Loghub line-level labels (token `-` = normal).
-- Deep mode embeds unique templates only - a real optimization, disclosed.
-- Zookeeper stress-test number reflects a genuine incident-heavy capture.
+- Deep mode embeds unique templates only -a real optimization, disclosed.
+- `--rca` sends only grouped anomaly summaries to the LLM, never the full log.
 - All tests reproducible with the included harness. See [BENCHMARK.md](BENCHMARK.md).
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT -see [LICENSE](LICENSE).
