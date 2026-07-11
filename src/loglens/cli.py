@@ -8,7 +8,7 @@ from rich.panel import Panel
 from rich.markdown import Markdown
 
 from loglens.models import LogEntry
-from loglens.pipeline.ingestion import stream_lines
+from loglens.pipeline.ingestion import stream_lines, AsyncCommandReader, CommandError
 from loglens.pipeline.parser import detect_format, parse_line
 from loglens.pipeline.worker import run_worker_pool
 from loglens.output.terminal import LiveProgress
@@ -21,6 +21,7 @@ from loglens.pipeline.templates import TemplateRegistry
 from loglens.pipeline.grouping import group_anomalies, group_summaries
 from loglens.pipeline.embeddings import EmbeddingEngine
 from loglens.llm import LLMConfig, LLMError, run_rca, run_ask, save_report
+from loglens.live import LiveDetector
 
 try:
     from loglens.pipeline.deep_embeddings import DeepEmbeddingEngine
@@ -599,6 +600,90 @@ def bench(
         with open(out, "w") as f:
             f.write(to_markdown(results, source))
         console.print(f"[bold cyan][LogLens][/bold cyan] Results saved: [green]{out}[/green]")
+
+
+@app.command()
+def watch(
+    cmd: str = typer.Argument(..., help='Command to run and watch, e.g. "docker logs -f my-api"'),
+    window: int = typer.Option(500, "--window", help="Rolling window size (entries)"),
+    mode: str = typer.Option("fast", "--mode", help="fast or deep"),
+    sensitivity: str = typer.Option("normal", "--sensitivity", help="low, normal, or high"),
+    threshold: float = typer.Option(None, "--threshold", help="Explicit flag threshold"),
+    quiet: bool = typer.Option(False, "--quiet", help="Only print anomalies, no status line"),
+    rca: bool = typer.Option(False, "--rca", help="After stopping, run AI root-cause analysis on everything caught"),
+    rca_out: str = typer.Option(None, "--rca-out", help="Also save the RCA as a markdown file"),
+    html_report: str = typer.Option(None, "--html-report", help="After stopping, write a shareable HTML dashboard of the session"),
+):
+
+    det = LiveDetector(window=window, mode=mode, sensitivity=sensitivity,
+                       threshold=threshold)
+    style = {"EMERGENCY": "bold white on red", "FATAL": "bold red",
+             "CRITICAL": "red", "ERROR": "yellow", "WARN": "dark_orange"}
+
+    def show(a):
+        s = style.get(a.level.upper(), "cyan")
+        svc = f" [magenta]{a.service}[/magenta]" if a.service not in ("", "unknown") else ""
+        console.print(
+            f"[dim]{a.timestamp or '—'}[/dim] [{s}]\\[{a.level}][/{s}]{svc} "
+            f"[bold]{a.score:.2f}[/bold] {a.message}")
+        if a.reasons:
+            console.print(f"          [dim]{'; '.join(a.reasons[:3])}[/dim]")
+
+    async def _watch():
+        reader = AsyncCommandReader(cmd)
+        if not quiet:
+            console.print(f"[bold cyan][LogLens][/bold cyan] watching: [bold]{cmd}[/bold] "
+                          f"[dim](window={window}, mode={mode}, Ctrl-C to stop)[/dim]")
+        n = 0
+        async for line in reader:
+            n += 1
+            for a in det.feed(line):
+                show(a)
+            if not quiet and n % 500 == 0:
+                s = det.summary()
+                console.print(f"[dim]… {s['entries']:,} lines, "
+                              f"{s['anomalies']} anomalies so far[/dim]")
+
+    try:
+        asyncio.run(_watch())
+    except KeyboardInterrupt:
+        pass
+    except CommandError as exc:
+        console.print(f"[bold red][LogLens][/bold red] {exc}")
+        raise typer.Exit(code=1)
+
+    for a in det.flush():
+        show(a)
+    s = det.summary()
+    lvl = ", ".join(f"{k}: {v}" for k, v in sorted(
+        s["by_level"].items(), key=lambda kv: -kv[1])) or "none"
+    console.print(Panel(
+        f"lines analyzed: [bold]{s['entries']:,}[/bold]\n"
+        f"anomalies:      [bold]{s['anomalies']}[/bold]  ({lvl})\n"
+        f"incident mode:  {'[bold red]YES[/bold red]' if s['incident'] else 'no'}",
+        title="[bold cyan]WATCH SUMMARY[/bold cyan]", border_style="cyan"))
+
+    rca_result = None
+    if rca or rca_out:
+        try:
+            console.print("[bold cyan][LogLens][/bold cyan] running AI root-cause analysis…")
+            rca_result = det.rca(source_name=cmd)
+            console.print(Panel(
+                Markdown(rca_result.report),
+                title=f"🧠 AI Root-Cause Analysis ({rca_result.provider} / {rca_result.model})",
+                border_style="cyan"))
+            if rca_out:
+                save_report(rca_result, rca_out, source_name=cmd)
+                console.print(f"[bold cyan][LogLens][/bold cyan] RCA saved to [bold]{rca_out}[/bold]")
+        except LLMError as exc:
+            console.print(f"[bold red][LogLens][/bold red] RCA failed: {exc}")
+            console.print("[dim]Set LOGLENS_LLM_PROVIDER / LOGLENS_LLM_MODEL / "
+                          "LOGLENS_LLM_API_KEY (see `loglens analyze --help`).[/dim]")
+
+    if html_report:
+        det.save_html(html_report, rca=rca_result, source_name=cmd)
+        console.print(f"[bold cyan][LogLens][/bold cyan] HTML report saved to "
+                      f"[bold]{html_report}[/bold]")
 
 
 if __name__ == "__main__":
