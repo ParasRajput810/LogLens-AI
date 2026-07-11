@@ -3,10 +3,45 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "loglens"
-version = "0.3.0"
-description = "AI-powered CLI for intelligent log analysis and anomaly detection"
+name = "loglensai"
+version = "0.3.1"
+description = "AI-powered log anomaly detection & incident grouping: local, fast, and explainable."
+readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    { name = "Paras Rajput", email = "pr8101999@gmail.com" },
+]
+keywords = [
+  "logging",
+  "log-analysis",
+  "anomaly-detection",
+  "structured-logging",
+  "observability",
+  "incident-response",
+  "devops",
+  "site-reliability-engineering",
+  "machine-learning",
+  "nlp",
+  "ai",
+  "llm",
+  "rca",
+  "root-cause-analysis",
+  "log-analytics"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Logging",
+    "Topic :: System :: Monitoring",
+    "Topic :: Software Development :: Debuggers",
+]
 dependencies = [
     "typer>=0.12.0",
     "rich>=13.0.0",
@@ -14,12 +49,15 @@ dependencies = [
     "aiohttp>=3.9.0",
     "scikit-learn>=1.4.0",
     "numpy>=1.26.0",
+    "hdbscan>=0.8.33",
+    "umap-learn>=0.5.6",
     "platformdirs>=4.0.0",
 ]
 
 [project.optional-dependencies]
 deep = [
     "sentence-transformers>=2.2.0",
+    "torch>=2.0.0",
 ]
 dev = [
     "pytest>=8.0.0",
@@ -35,3 +73,9 @@ packages = ["src/loglens"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[project.urls]
+"Homepage" = "https://loglensai.com"
+"Bug Tracker" = "https://github.com/parasrajput/loglensai/issues"
+"Source Code" = "https://github.com/parasrajput/loglensai"
+"Documentation" = "https://github.com/ParasRajput810/LogLens-AI/blob/main/DOCUMENTATION.md"
