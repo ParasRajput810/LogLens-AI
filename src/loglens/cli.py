@@ -1,5 +1,6 @@
 import asyncio
 import functools
+
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -14,8 +15,10 @@ from loglens.output.terminal import LiveProgress
 from loglens.output.html_report import render_html_report
 from loglens.pipeline.detector import detect_anomalies, cluster_summary, DetectorConfig
 from loglens.pipeline.benchmark import run_benchmark
+from loglens.pipeline.speedbench import bench_file, to_markdown
 from loglens.pipeline.turbo import scan_file as turbo_scan
 from loglens.pipeline.templates import TemplateRegistry
+from loglens.pipeline.grouping import group_anomalies, group_summaries
 from loglens.pipeline.embeddings import EmbeddingEngine
 from loglens.llm import LLMConfig, LLMError, run_rca, run_ask, save_report
 
@@ -32,13 +35,29 @@ app = typer.Typer(
 
 console = Console()
 
-@app.command()
-def version():
-    console.print("[bold cyan]LogLens AI[/bold cyan] version [bold]0.1.0[/bold]")
+LEVEL_WEIGHT = {"EMERGENCY": 6, "FATAL": 5, "CRITICAL": 5, "ERROR": 4,
+                "WARN": 3, "WARNING": 3, "INFO": 1, "DEBUG": 0}
+CATEGORY_ORDER = ["EMERGENCY", "FATAL", "CRITICAL", "ERROR", "WARN",
+                  "WARNING", "NOTICE", "INFO", "DEBUG"]
+CATEGORY_COLOR = {
+    "EMERGENCY": "bold red", "FATAL": "bold red", "CRITICAL": "bold red",
+    "ERROR": "red", "WARN": "bold yellow", "WARNING": "bold yellow",
+    "NOTICE": "yellow", "INFO": "dim", "DEBUG": "dim",
+}
+INFO_KEYWORDS = {"error", "fail", "timeout", "refused", "crash", "panic", "oom", "kill"}
 
-@app.command()
-def hello():
-    console.print("[bold green] LogLens is alive![/bold green] Let's analyze some logs.")
+
+def _level_color(lvl: str) -> str:
+    lvl = lvl.upper()
+    if lvl in ("ERROR", "CRITICAL", "FATAL", "EMERGENCY"):
+        return "bold red"
+    elif lvl in ("WARN", "WARNING"):
+        return "bold yellow"
+    return "dim"
+
+
+def _severity(a) -> int:
+    return LEVEL_WEIGHT.get(a.level.upper(), 2)
 
 
 def _print_llm_config_hint():
@@ -78,7 +97,7 @@ def _do_rca(rca_input, scores, reasons, source, provider, llm_model, api_key, rc
         return None
 
 
-def _write_html(html_out, source, total_lines, anomalies, rca_result=None):
+def _write_html(html_out, source, total_lines, anomalies, rca_result=None, scores=None):
     level_counts: dict = {}
     for a in anomalies:
         lvl = a.level.upper()
@@ -92,10 +111,21 @@ def _write_html(html_out, source, total_lines, anomalies, rca_result=None):
     html_doc = render_html_report(
         source=source, total_lines=total_lines, anomalies=anomalies,
         level_counts=level_counts, rca_markdown=rca_md, rca_meta=rca_meta,
+        scores=scores,
     )
     with open(html_out, "w", encoding="utf-8") as f:
         f.write(html_doc)
     console.print(f"[bold cyan][LogLens][/bold cyan] HTML report saved: [green]{html_out}[/green]")
+
+
+@app.command()
+def version():
+    console.print("[bold cyan]LogLens AI[/bold cyan] version [bold]0.2.0[/bold]")
+
+
+@app.command()
+def hello():
+    console.print("[bold green] LogLens is alive![/bold green] Let's analyze some logs.")
 
 
 @app.command()
@@ -105,7 +135,7 @@ def analyze(
     verbose: bool = typer.Option(False, "--verbose", help="Show sample parsed entry"),
     workers: int = typer.Option(4, "--workers", help="Number of parallel workers"),
     deep: bool = typer.Option(False, "--deep", help="Use neural embeddings (accurate, slower)"),
-    limit: int = typer.Option(20, "--limit", help="Max anomalies to display (default: 20)"),
+    limit: int = typer.Option(20, "--limit", help="Max anomaly families to display (default: 20)"),
     sort_by: str = typer.Option("severity", "--sort-by", help="Sort anomalies by: severity | time | service"),
     turbo: bool = typer.Option(False, "--turbo", help="Fast multiprocess scan for huge files (byte-range + template dedup, skips embeddings)"),
     explain: int = typer.Option(0, "--explain", help="Show top-N scored entries (flagged or not) with score and reasons — for debugging near-misses"),
@@ -141,14 +171,6 @@ def analyze(
                 f"[bold cyan][LogLens][/bold cyan] Anomalies: "
                 f"[bold red]{len(anomalies):,}[/bold red] 🚨{incident_flag}"
             )
-
-            def _level_color(lvl: str) -> str:
-                lvl = lvl.upper()
-                if lvl in ("ERROR", "CRITICAL", "FATAL", "EMERGENCY"):
-                    return "bold red"
-                elif lvl in ("WARN", "WARNING"):
-                    return "bold yellow"
-                return "dim"
 
             display = anomalies[:limit]
             if display:
@@ -190,7 +212,8 @@ def analyze(
                 console.print("[dim]RCA skipped — no anomalies to analyze.[/dim]")
 
             if html_out:
-                _write_html(html_out, source, res.parsed_lines, rca_entries, rca_result)
+                turbo_scores = [float(a.score) for a in anomalies] if anomalies else None
+                _write_html(html_out, source, res.parsed_lines, rca_entries, rca_result, scores=turbo_scores)
 
             return   # turbo done — skip the classic pipeline
 
@@ -283,12 +306,6 @@ def analyze(
                 incident_flag = " [bold red blink]⚠ INCIDENT[/bold red blink]"
 
         # --- category-wise breakdown ---
-        CATEGORY_ORDER = ["EMERGENCY", "FATAL", "CRITICAL", "ERROR", "WARN", "WARNING", "NOTICE", "INFO", "DEBUG"]
-        CATEGORY_COLOR = {
-            "EMERGENCY": "bold red", "FATAL": "bold red", "CRITICAL": "bold red",
-            "ERROR": "red", "WARN": "bold yellow", "WARNING": "bold yellow",
-            "NOTICE": "yellow", "INFO": "dim", "DEBUG": "dim",
-        }
         level_counts: dict = {}
         for a in anomalies:
             lvl = a.level.upper()
@@ -342,16 +359,9 @@ def analyze(
         console.print(f"[bold cyan][LogLens][/bold cyan] Skipped:   [bold red]{stats['skipped']}[/bold red]")
 
         # --- severity ranking (suppress INFO false positives) ---
-        LEVEL_WEIGHT = {"EMERGENCY": 6, "FATAL": 5, "CRITICAL": 5, "ERROR": 4, "WARN": 3, "WARNING": 3, "INFO": 1, "DEBUG": 0}
-
-        def _severity(a):
-            return LEVEL_WEIGHT.get(a.level.upper(), 2)
-
-        # Filter out pure INFO anomalies unless they look genuinely bad
-        _info_keywords = {"error", "fail", "timeout", "refused", "crash", "panic", "oom", "kill"}
         filtered_anomalies = [
             a for a in anomalies
-            if a.level.upper() != "INFO" or any(kw in a.message.lower() for kw in _info_keywords)
+            if a.level.upper() != "INFO" or any(kw in a.message.lower() for kw in INFO_KEYWORDS)
         ]
 
         # Sort
@@ -361,30 +371,26 @@ def analyze(
             filtered_anomalies.sort(key=lambda a: a.service)
         # "time" = keep original order
 
-        # --- display anomalies ---
-        if filtered_anomalies:
-            def _level_color(lvl: str) -> str:
-                lvl = lvl.upper()
-                if lvl in ("ERROR", "CRITICAL", "FATAL", "EMERGENCY"):
-                    return "bold red"
-                elif lvl in ("WARN", "WARNING"):
-                    return "bold yellow"
-                return "dim"
+        # --- Phase 1: template grouping (families, ×N) ---
+        groups = group_anomalies(filtered_anomalies)
 
-            display = filtered_anomalies[:limit]
+        if groups:
+            display = groups[:limit]
             console.print()
             console.print(Panel(
                 "\n".join(
-                    f"[{_level_color(a.level)}] [{a.level}][/{_level_color(a.level)}] "
-                    f"[yellow]{a.service}[/yellow] — {a.message[:120]}"
-                    for a in display
+                    f"[{_level_color(g.level)}] [{g.level}][/{_level_color(g.level)}] "
+                    f"[yellow]{g.service}[/yellow] "
+                    f"[dim](×{g.count:,}, score {g.max_score:.2f})[/dim] — {g.sample[:110]}"
+                    for g in display
                 ),
-                title=f"[bold red]ANOMALIES DETECTED ({len(filtered_anomalies)} total)[/bold red]",
+                title=f"[bold red]ANOMALY FAMILIES ({len(groups)} families, "
+                      f"{len(filtered_anomalies)} events)[/bold red]",
                 border_style="red",
             ))
-            if len(filtered_anomalies) > limit:
+            if len(groups) > limit:
                 console.print(
-                    f"[dim]... and {len(filtered_anomalies) - limit} more anomalies "
+                    f"[dim]... and {len(groups) - limit} more families "
                     f"(use --limit {limit * 2} to see more)[/dim]"
                 )
             suppressed = len(anomalies) - len(filtered_anomalies)
@@ -394,25 +400,32 @@ def analyze(
             console.print("\n[bold green] No anomalies detected![/bold green]")
 
         # --- AI root-cause analysis (classic path) ---
+        # Phase 1: send ONE representative entry per family (×N in message) — far cheaper tokens
         rca_result = None
         rca_input = []
-        if filtered_anomalies:
-            rca_input = sorted(
-                filtered_anomalies,
-                key=lambda a: (_severity(a), getattr(a, "anomaly_score", 0.0)),
-                reverse=True,
-            )
+        if groups:
+            rca_input = [
+                LogEntry(
+                    level=g.level,
+                    service=g.service,
+                    message=f"{g.sample} (occurred ×{g.count:,}, score {g.max_score:.2f})",
+                    raw=g.sample,
+                )
+                for g in groups
+            ]
         if rca:
             if rca_input:
-                scores = [getattr(a, "anomaly_score", 0.0) for a in rca_input]
-                reasons = ["; ".join(getattr(a, "anomaly_reasons", [])) for a in rca_input]
+                scores = [g.max_score for g in groups]
+                reasons = ["; ".join(g.reasons) for g in groups]
                 rca_result = _do_rca(rca_input, scores, reasons, source, provider, llm_model, api_key, rca_out)
             else:
                 console.print("[dim]RCA skipped — no anomalies to analyze.[/dim]")
 
-        # --- HTML report ---
+        # --- HTML report (Phase 3: with score distribution) ---
         if html_out:
-            _write_html(html_out, source, len(entries), rca_input or filtered_anomalies, rca_result)
+            entry_scores = [getattr(e, "anomaly_score", 0.0) for e in entries]
+            _write_html(html_out, source, len(entries), filtered_anomalies, rca_result,
+                        scores=entry_scores)
 
         if verbose and sample_entry:
             table = Table(title="Sample Parsed Entry")
@@ -472,9 +485,19 @@ def ask(
         try:
             cfg = LLMConfig.from_env(provider=provider, model=llm_model, api_key=api_key)
             console.print(f"[bold cyan][LogLens][/bold cyan] 🤖 Asking [bold]{cfg.provider}[/bold] ([dim]{cfg.model}[/dim])...")
-            ranked = sorted(anomalies, key=lambda a: getattr(a, "anomaly_score", 0.0), reverse=True)
-            scores = [getattr(a, "anomaly_score", 0.0) for a in ranked]
-            reasons = ["; ".join(getattr(a, "anomaly_reasons", [])) for a in ranked]
+            
+            groups = group_anomalies(anomalies)
+            ranked = [
+                LogEntry(
+                    level=g.level,
+                    service=g.service,
+                    message=f"{g.sample} (occurred ×{g.count:,}, score {g.max_score:.2f})",
+                    raw=g.sample,
+                )
+                for g in groups
+            ]
+            scores = [g.max_score for g in groups]
+            reasons = ["; ".join(g.reasons) for g in groups]
             result = run_ask(question, ranked, cfg, scores=scores, reasons=reasons, source_name=source)
             console.print()
             console.print(Panel(
@@ -551,6 +574,31 @@ def benchmark(
             console.print(f"\n[bold red]✗ FAIL: F1 {f1:.3f} < required {min_f1:.3f}[/bold red]")
             raise typer.Exit(code=1)
         console.print(f"\n[bold green]✓ PASS: F1 {f1:.3f} >= {min_f1:.3f}[/bold green]")
+
+
+@app.command()
+def bench(
+    source: str = typer.Argument(..., help="Log file to benchmark against"),
+    modes: str = typer.Option("fast,turbo", "--modes", help="Comma-separated: fast,deep,turbo"),
+    workers: int = typer.Option(4, "--workers"),
+    out: str = typer.Option(None, "--out", help="Write markdown results to this file"),
+):
+    mode_list = [m.strip() for m in modes.split(",") if m.strip()]
+    console.print(f"\n[bold cyan][LogLens][/bold cyan] Benchmarking [yellow]{source}[/yellow] — modes: {mode_list}")
+    results = bench_file(source, mode_list, workers=workers)
+
+    table = Table(title="LogLens Speed Benchmark", header_style="bold cyan")
+    for col in ["Mode", "Lines", "Time (s)", "Lines/s", "Anomalies", "Peak RAM (MB)"]:
+        table.add_column(col, justify="right")
+    for r in results:
+        table.add_row(r.mode, f"{r.lines:,}", str(r.seconds),
+                      f"{r.lines_per_s:,}", str(r.anomalies), str(r.peak_mb))
+    console.print(table)
+
+    if out:
+        with open(out, "w") as f:
+            f.write(to_markdown(results, source))
+        console.print(f"[bold cyan][LogLens][/bold cyan] Results saved: [green]{out}[/green]")
 
 
 if __name__ == "__main__":
