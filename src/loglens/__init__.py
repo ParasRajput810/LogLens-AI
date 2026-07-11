@@ -3,9 +3,13 @@ from loglens.api import (Anomaly, AnalysisResult, analyze, analyze_async,
 from loglens.live import LiveDetector
 from loglens.handler import LogLensHandler
 from loglens.pipeline.run import RunConfig
+from loglens.monitor import init, Monitor
+from loglens.alerts import (SlackAlerter, TeamsAlerter, EmailAlerter,
+                            AlertDispatcher)
 
 __version__ = "0.3.0"
 
 __all__ = ["analyze", "analyze_async", "analyze_entries", "AnalysisResult",
            "Anomaly", "LiveDetector", "LogLensHandler", "RunConfig",
-           "__version__"]
+           "init", "Monitor", "SlackAlerter", "TeamsAlerter",
+           "EmailAlerter", "AlertDispatcher", "__version__"]
