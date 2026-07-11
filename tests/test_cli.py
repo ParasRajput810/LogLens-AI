@@ -16,7 +16,7 @@ def strip_ansi(text: str) -> str:
 def test_version():
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert "0.1.0" in strip_ansi(result.output)
+    assert "0.2.0" in strip_ansi(result.output)
 
 def test_hello():
     result = runner.invoke(app, ["hello"])
