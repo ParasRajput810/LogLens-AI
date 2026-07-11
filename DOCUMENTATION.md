@@ -1,4 +1,4 @@
-# 📖 LogLens AI -Command Reference
+# 📖 LogLens AI - Command Reference
 
 Complete guide to every LogLens command, flag, and workflow.
 
@@ -13,12 +13,14 @@ Complete guide to every LogLens command, flag, and workflow.
 3. [`version`](#version)
 4. [`hello`](#hello)
 5. [`analyze`](#analyze) -the main command
-6. [`ask`](#ask) -natural-language Q&A
-7. [`benchmark`](#benchmark) -labeled accuracy evaluation
-8. [`bench`](#bench) -speed / memory profiling
-9. [AI (LLM) configuration](#ai-llm-configuration)
-10. [Common workflows](#common-workflows)
-11. [Exit codes](#exit-codes)
+6. [`watch`](#watch) -live log watching (docker, kubernetes, servers)
+7. [Using LogLens inside Python](#using-loglens-inside-python-the-sdk) -the SDK
+8. [`ask`](#ask) -natural-language Q&A
+9. [`benchmark`](#benchmark) -labeled accuracy evaluation
+10. [`bench`](#bench) -speed / memory profiling
+11. [AI (LLM) configuration](#ai-llm-configuration)
+12. [Common workflows](#common-workflows)
+13. [Exit codes](#exit-codes)
 
 ---
 
@@ -144,6 +146,178 @@ loglens analyze --source app.log --rca --rca-out rca.md --html report.html
 - **Category breakdown tree**: counts per severity level.
 - **INCIDENT flag**: shown when ≥30% of entries are severe.
 - **HTML report** (`--html`): dark-themed dashboard with severity breakdown, per-service breakdown, and score distribution -fully offline (no internet required).
+
+---
+
+## `watch`
+
+**What it does, in one line:** it sits next to your running app and taps you on the shoulder the moment something goes wrong — instead of you scrolling through thousands of log lines later.
+
+Think of it like a security camera for your logs. Normally, when an app runs (a website, a database, anything inside Docker), it constantly writes little status messages called *logs*. 99% of them are boring: "request ok", "user logged in". Hidden between them are the important ones: "connection refused", "out of memory", "disk failure". `watch` reads the stream live, ignores the boring lines, and prints **only the problems** — the moment they happen.
+
+### How to use it
+
+Give it the same command you would normally use to see your logs, in quotes:
+
+```bash
+# watch a Docker container
+loglens watch "docker logs -f my-api"
+
+# watch an app running on Kubernetes
+loglens watch "kubectl logs -f deploy/api -n prod"
+
+# watch a service on a Linux server
+loglens watch "journalctl -u nginx -f"
+```
+
+Then just leave it running. Press **Ctrl-C** whenever you want to stop.
+
+### What you'll see
+
+While it runs, nothing appears as long as everything is healthy. When a problem shows up, you get a line like this, instantly:
+
+```
+2024-03-10T14:30:00Z [ERROR] api-gateway 0.84 connection reset by peer during checkout
+          severity ERROR; recurring ERROR pattern (14x); failure keyword in severe entry
+```
+
+That reads as: *when* it happened, *how bad* it is (`ERROR`), *which part* of your system (`api-gateway`), a *score* from 0 to 1 (closer to 1 = more serious), *what* happened, and underneath — in plain words — *why* LogLens thinks it matters.
+
+Really serious lines (CRITICAL, FATAL, EMERGENCY) are shown **immediately**, without any waiting. When you press Ctrl-C, you get a closing summary card:
+
+```
+╭──────────── WATCH SUMMARY ────────────╮
+│ lines analyzed: 12,419                │
+│ anomalies:      15  (ERROR: 14, FATAL: 1)
+│ incident mode:  no                    │
+╰───────────────────────────────────────╯
+```
+
+### When would I use this?
+
+- You just deployed a new version and want to know *right away* if it starts failing.
+- Something feels slow or broken and you want to stare at one clean feed of problems instead of a firehose of noise.
+- You want to keep an eye on a server overnight — leave `watch` running and check the summary in the morning.
+
+### Useful options
+
+| Option | What it means |
+|--------|---------------|
+| `--window 500` | How many recent lines LogLens keeps in mind while judging (default 500). |
+| `--quiet` | Print only the problems, no status messages. |
+| `--threshold 0.85` | Be pickier: only show things scoring above 0.85. |
+| `--mode deep` | Slower but smarter judging (uses the neural model). |
+| `--rca` | When you stop watching, the AI reads everything that was caught and writes a short **root-cause story**: what most likely broke, and in what order. |
+| `--rca-out rca.md` | Also save that AI explanation as a file you can share. |
+| `--html-report out.html` | When you stop, save a **one-page visual dashboard** (open it in any browser — charts, the anomaly list, and the AI story if `--rca` was on). |
+
+The AI options use the same setup as the rest of LogLens — set `LOGLENS_LLM_PROVIDER`, `LOGLENS_LLM_MODEL` and `LOGLENS_LLM_API_KEY` once (see [AI (LLM) configuration](#ai-llm-configuration)). A typical "leave it running during a deploy" command looks like:
+
+```bash
+loglens watch "docker logs -f my-api" --rca --html-report deploy_watch.html
+```
+
+You watch problems stream in live; when you press Ctrl-C you get the summary, the AI's explanation of what went wrong, and a dashboard file you can send to a teammate.
+
+---
+
+## Using LogLens inside Python (the SDK)
+
+**What it does, in one line:** everything the `loglens` command can do, but callable from your own Python code — so your app can check logs by itself, or even raise an alarm about *its own* problems while it runs.
+
+You don't need to know how the detection works. There are three tools, from simplest to most advanced:
+
+### 1) `analyze()` — "here are some logs, tell me what's wrong"
+
+You hand it logs (a file, a list of lines, or even a command), and it hands back the problems, worst first.
+
+```python
+from loglens import analyze
+
+result = analyze("app.log")                     # a log file
+result = analyze(lines=my_list_of_lines)        # lines you already have
+result = analyze(cmd="docker logs my-api")      # output of a command
+
+for a in result.anomalies:
+    print(a.level, a.score, a.message, a.reasons)
+
+print(result.summary())
+# {'entries': 5000, 'anomalies': 13, 'incident': False,
+#  'by_level': {'FATAL': 1, 'ERROR': 12}, 'format': 'STANDARD'}
+```
+
+Each anomaly tells you: how bad (`level`), how confident (`score`, 0–1), what happened (`message`), where (`service`), and why it was flagged (`reasons`, in plain words).
+
+**Use it when:** you want a script that checks last night's logs, a small dashboard, a daily report — anything where you have logs and want answers programmatically. Inside async apps (like FastAPI) use `await analyze_async(...)` — same thing, doesn't block your app.
+
+### 2) `LogLensHandler` — your app raises its own alarm
+
+This is the one-liner that plugs LogLens into any Python application. Python apps already write logs through the standard `logging` module — this handler quietly reads that stream from the inside, and calls **your function** the moment a log line looks like trouble.
+
+```python
+import logging
+from loglens import LogLensHandler
+
+def alert_me(anomaly):
+    print("🚨", anomaly)          # or send Slack / email / anything
+
+logging.getLogger().addHandler(LogLensHandler(on_anomaly=alert_me))
+```
+
+That's the entire setup. From then on, if your app logs something like `database connection refused`, your `alert_me` function fires within seconds — while the app keeps running normally. If your alert function itself crashes, nothing happens to your app; LogLens swallows the error safely.
+
+**Use it when:** you run a FastAPI/Django/any-Python service and want to hear about problems *from the app itself*, without setting up any external monitoring system.
+
+### 3) `LiveDetector` — for custom streaming setups (advanced)
+
+If your logs come from somewhere unusual (a message queue, a socket, anything), feed lines in one by one and get anomalies out:
+
+```python
+from loglens import LiveDetector
+
+det = LiveDetector(window=500)
+for line in my_source():
+    for hit in det.feed(line):     # returns new anomalies, or nothing
+        print(hit)
+print(det.summary())               # totals when you're done
+```
+
+It remembers the last `window` lines, re-judges them periodically, reports each problem **exactly once**, shows CRITICAL/FATAL lines instantly, and never crashes your loop even if one batch of lines is weird. (This is exactly what powers `loglens watch` under the hood.)
+
+**Quick chooser:**
+
+| You want... | Use |
+|-------------|-----|
+| "Check these logs and give me the problems" | `analyze()` |
+| "My Python app should alert me when it's in trouble" | `LogLensHandler` |
+| "I have my own stream of lines to feed in" | `LiveDetector` |
+| "Watch docker/kubernetes logs from the terminal" | `loglens watch` (no Python needed) |
+
+### 4) The AI layer — explanations and shareable reports, from code
+
+Everything the CLI's AI can do is also one method call away in Python. After any `analyze()` (and on a `LiveDetector` too), you can:
+
+```python
+result = analyze("app.log")
+
+rca = result.rca()                 # AI writes a short root-cause story
+print(rca.report)                  # markdown: what broke, and why
+
+ans = result.ask("did the database or the network fail first?")
+print(ans.report)                  # AI answers about YOUR anomalies
+
+result.save_html("report.html", rca=rca)   # one-page dashboard for the browser
+result.save_rca("rca.md", rca=rca)         # the AI story as a file
+```
+
+- **`rca()`** — hands the anomalies to the AI and gets back a plain-language explanation of the most likely root cause. Great for pasting into an incident ticket.
+- **`ask("...")`** — free-form questions about what was found ("which service failed first?", "is this a disk problem?").
+- **`save_html(path)`** — writes a self-contained dashboard file: level charts, the worst anomalies, and the AI story if you pass one. Open in any browser, email it to anyone — no LogLens needed to view it.
+- **`save_rca(path)`** — the AI explanation as a markdown file.
+
+The same methods exist on a live session: `det.rca()`, `det.ask(...)`, `det.save_html(...)` — so a long-running watcher can end its day by writing its own incident report.
+
+One-time setup (same as the CLI): set `LOGLENS_LLM_PROVIDER`, `LOGLENS_LLM_MODEL` and `LOGLENS_LLM_API_KEY`, or pass `provider=`, `model=`, `api_key=` directly to any of these methods. Model choice note: `analyze()` accepts `mode="fast"` (default) or `mode="deep"` (neural, slower, best for subtle cases) — the same modes as the CLI.
 
 ---
 
