@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "loglens"
-version = "0.2.0"
+version = "0.3.0"
 description = "AI-powered CLI for intelligent log analysis and anomaly detection"
 requires-python = ">=3.10"
 dependencies = [
@@ -14,12 +14,13 @@ dependencies = [
     "aiohttp>=3.9.0",
     "scikit-learn>=1.4.0",
     "numpy>=1.26.0",
-    "hdbscan>=0.8.33",
-    "umap-learn>=0.5.6",
     "platformdirs>=4.0.0",
 ]
 
 [project.optional-dependencies]
+deep = [
+    "sentence-transformers>=2.2.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
