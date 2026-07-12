@@ -1,0 +1,18 @@
+services:
+  analyze:
+    image: loglensai/loglens:latest
+    volumes:
+      - ./logs:/data
+    command: ["analyze", "--source", "app.log", "--rca", "--html", "report.html"]
+    env_file:
+      - .env       
+
+  watch:
+    image: loglensai/loglens:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./logs:/data
+    env_file:
+      - .env        
+    command: ["watch", "docker logs -f my-api", "--rca"]
+    restart: unless-stopped
