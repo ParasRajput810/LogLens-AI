@@ -2,179 +2,206 @@
 
 # 🔍 LogLens AI
 
-**AI-powered log anomaly detection that reads your logs like a senior engineer.**
+### AI-powered log anomaly detection that reads your logs like a senior engineer.
 
-*Detects anomalies by meaning, explains them in plain English, groups them into incidents, watches your services live, alerts you Sentry-style - and runs 100% local: zero setup, zero cloud, $0/GB.*
+**Detect anomalies by _meaning_ · explain them in plain English · group them into incidents · watch services live · alert Sentry-style - 100% local, zero setup, $0/GB.**
 
-`pip install loglens` → first insight in seconds.
+[![PyPI version](https://img.shields.io/pypi/v/loglensai?color=3b82f6&label=pip%20install%20loglensai&logo=pypi&logoColor=white)](https://pypi.org/project/loglensai/)
+[![Python](https://img.shields.io/pypi/pyversions/loglensai?color=3776ab&logo=python&logoColor=white)](https://pypi.org/project/loglensai/)
+[![Docker](https://img.shields.io/badge/docker-loglensai%2Floglens-2496ed?logo=docker&logoColor=white)](https://hub.docker.com/r/loglensai/loglens)
+[![License: MIT](https://img.shields.io/badge/License-MIT-3fb950.svg)](LICENSE)
+[![F1 Score](https://img.shields.io/badge/BGL%20F1-0.957-8957e5)](BENCHMARK.md)
+[![Recall](https://img.shields.io/badge/recall-1.000%20(0%20missed)-3fb950)](BENCHMARK.md)
+
+```bash
+pip install loglensai
+```
+
+**→ first real insight in seconds. No account. No agent. No cloud. No bill.**
+
+[Website](https://loglensai.com) · [Documentation](https://loglensai.com/docs) · [Benchmarks](BENCHMARK.md) · [Docker Hub](https://hub.docker.com/r/loglensai/loglens)
 
 </div>
 
 ---
 
-## Why LogLens AI stands out
+## Why LogLens AI
 
-Most log platforms give you a score and a bill. LogLens AI gives you **published, reproducible accuracy** - something no major platform does - plus **explainable, grouped incidents**, **live watching**, **self-alerting for your own apps**, and an **optional AI root-cause layer**.
+Most log platforms give you a score and a bill. **LogLens AI gives you answers - and runs entirely on your own machine.** It's the only log anomaly detector with **published, reproducible F1**, plus **explainable, grouped incidents**, **live watching**, **one-line self-alerting for your own apps**, and an **optional AI root-cause layer**.
 
 |  | **LogLens AI** | Splunk | Datadog | Elastic ML | DeepLog (research) |
-|---|---|---|---|---|---|
-| Setup time | **seconds** | days–weeks | hours–days | hours | N/A (paper) |
-| Cost | **$0/GB** | ~$150/GB/yr | ~$0.10–1.27/GB | license | free |
-| Runs offline / air-gapped | ✅ | partial | ❌ | partial | ✅ |
-| Published, reproducible accuracy | ✅ **F1 0.957** | ❌ | ❌ | ❌ | ✅ (HDFS only) |
-| Explains *why* a line is anomalous | ✅ | scores only | scores only | scores only | ❌ |
-| Groups repeats into incident families | ✅ | partial | partial | ❌ | ❌ |
-| Live watch (docker / k8s / journald) | ✅ | ✅ | ✅ | partial | ❌ |
-| Self-alerting for your own app (1 line) | ✅ | ❌ | agent | ❌ | ❌ |
-| AI root-cause narratives (BYO key) | ✅ | paid add-on | paid | ❌ | ❌ |
-| Self-contained offline HTML report | ✅ | ❌ | ❌ | ❌ | ❌ |
+|---|:---:|:---:|:---:|:---:|:---:|
+| ⏱️ Setup time | **seconds** | days–weeks | hours–days | hours | N/A |
+| 💰 Cost | **$0/GB** | ~$150/GB/yr | ~$0.10–1.27/GB | license | free |
+| 🔒 Runs offline / air-gapped | **✅** | partial | ❌ | partial | ✅ |
+| 📊 Published, reproducible accuracy | **✅ F1 0.957** | ❌ | ❌ | ❌ | ✅ (HDFS only) |
+| 💬 Explains *why* a line is anomalous | **✅** | scores only | scores only | scores only | ❌ |
+| 🧩 Groups repeats into incident families | **✅** | partial | partial | ❌ | ❌ |
+| 👀 Live watch (docker / k8s / journald) | **✅** | ✅ | ✅ | partial | ❌ |
+| 🚨 Self-alerting for your app (1 line) | **✅** | ❌ | agent | ❌ | ❌ |
+| 🤖 AI root-cause narratives (BYO key) | **✅** | paid add-on | paid | ❌ | ❌ |
+| 📄 Self-contained offline HTML report | **✅** | ❌ | ❌ | ❌ | ❌ |
 
-> **The one-liner:** *The only log anomaly detector with published, reproducible F1 - free, local, explained, grouped into incidents, and able to watch and alert on your services in real time.*
-
----
-
-## 📊 Benchmark results (real production logs)
-
-All numbers measured on real-world labeled datasets from [Loghub](https://github.com/logpai/loghub).
-Fully reproducible - see [BENCHMARK.md](BENCHMARK.md).
-
-### Accuracy - Loghub BGL (500,000 lines, 206,847 labeled alerts)
-
-| Mode | Engine | Precision | Recall | F1 | Speed | Missed alerts |
-|------|--------|-----------|--------|----|-------|---------------|
-| **fast** | from-scratch statistical | 0.901 | **1.000** | 0.948 | ~6,700 l/s | **0** |
-| **turbo** | from-scratch, optimized | 0.901 | **1.000** | 0.948 | ~7,300 l/s | **0** |
-| **deep** | AI semantic embeddings | **0.917** | **1.000** | **0.957** | ~3,400 l/s | **0** |
-
-- **Zero false negatives** across all 206,847 alerts, in every mode.
-- **Deep (AI) mode measurably beats the baseline** - semantic embeddings cut false positives by ~18%. Provable AI value, not marketing.
-- **Turbo matches fast-mode accuracy exactly** at higher throughput - speed with no accuracy tradeoff.
-
-### Speed benchmark - `loglens bench`
-
-Measured with the built-in `bench` command (`demo_incident.log`, 810 entries):
-
-| Mode | Lines | Time (s) | Lines/s | Anomaly families | Peak RAM |
-|------|-------|----------|---------|------------------|----------|
-| **⚡ turbo** | 810 | 0.054 | **14,999** | **8** | 169 MB |
-| **🟢 fast** | 810 | 0.601 | 1,348 | (170 raw events) | 169 MB |
-
-Turbo collapses 810 lines into **8 incident families** - the "insight in seconds on one box" story.
-
-### Cross-dataset generality - no retuning
-
-Threshold tuned on BGL, applied **unchanged** to the Sandia Thunderbird cluster (500,000 all-normal lines):
-
-| Mode | False-alarm rate | Specificity | Speed |
-|------|------------------|-------------|-------|
-| fast | 0.68% | **99.32%** | ~8,600 l/s |
-| deep | 0.67% | **99.33%** | ~1,800 l/s |
-
-### Needle-in-a-haystack - injected incident recall
-
-5 unique critical incidents (kernel panic, OOM, disk failure, security breach, data corruption) injected into routine logs across 6 formats:
-
-| Format | Caught | Format | Caught |
-|---|---|---|---|
-| Apache | 5/5 | HealthApp | 5/5 |
-| Spark | 5/5 | OpenStack | 5/5 |
-| HDFS | 5/5 | Thunderbird | 5/5 |
-
-**30/30 injected incidents detected - 100% recall across every format, zero configuration.**
+> **In one line:** *the only log anomaly detector with published, reproducible F1 - free, local, explained, grouped into incidents, and able to watch and alert on your services in real time.*
 
 ---
 
-## ✨ Features
+## 🚀 Install
 
-### Detection core
-- 🧠 **Three detection engines, one unified scoring model**
-  - `fast` - from-scratch statistical detector (TF-IDF template embeddings, weighted density clustering, severity/rarity/chronic scoring). No ML libraries in the core.
-  - `turbo` - the same accuracy, optimized for throughput via parallel byte-range scanning and template dedup.
-  - `deep` - transformer-based semantic embeddings that understand log *meaning*. Runs on unique templates only, so it stays fast.
-- 🧩 **Anomaly families (template grouping)** - repeated anomalies are collapsed into a single incident with an `×N` count, across *all* modes. No more scrolling through 200 identical errors.
-- ⚖️ **Recalibrated scoring** - graded severity priors, **chronic-pattern damping** (routine errors are suppressed), and a **global-rarity bonus** (rare severe events are boosted). Cuts false positives dramatically while keeping 1.0 recall on real incidents.
-- 💬 **Explainable anomalies** - every flag comes with a plain-language reason (rare + severe + burst context), not just a score.
-- 📄 **10+ log formats auto-detected** - Apache, Linux, Mac, HDFS, Spark, Zookeeper, OpenStack, Thunderbird, BGL, HealthApp and generic formats. No config, ever.
-- 🔌 **Flexible ingestion** - files, stdin, HTTP.
-
-### Live & always-on
-- 👀 **`loglens watch` - live tail anomaly alerts** - point it at `docker logs -f`, `kubectl logs -f`, or `journalctl -f` and it prints **only the problems**, the instant they happen. CRITICAL/FATAL lines surface immediately; Ctrl-C prints a summary card (and, optionally, an AI root-cause story + HTML dashboard).
-- 🚨 **Always-on monitoring & alerts (`loglens.init`)** - add **one line** to your app and get Sentry-style alerts in **Slack / Teams / Email** the moment something serious happens, including uncaught crashes. De-duplicated, rate-limited, sent from a background thread so it never risks your app. Works with **zero AI setup** (built-in cause hints) and gets richer with a BYO LLM key.
-
-### AI layer (bring your own key)
-- 🤖 **AI root-cause analysis (`--rca`)** - optional, BYO key (OpenAI / Azure / Groq). Sends only **grouped anomaly summaries** to the LLM - never your full log file - so it's cheap, private, and coherent.
-- ❓ **Natural-language Q&A (`loglens ask`)** - ask "why did db-service degrade?" and get an answer grounded in the detected anomalies.
-
-### Python SDK
-- 🐍 **Full SDK** - everything the CLI does, callable from your code:
-  - `analyze()` / `analyze_async()` - "here are logs, give me the problems."
-  - `LogLensHandler` - drop into Python's `logging` so your app raises its own alarm.
-  - `LiveDetector` - feed a custom stream line-by-line, get anomalies out (powers `watch`).
-  - `.rca()`, `.ask(...)`, `.save_html(...)`, `.save_rca(...)` on any result or live session.
-
-### Reporting & benchmarking
-- 📈 **Self-contained HTML report (`--html`)** - a dark-themed dashboard with severity breakdown, per-service breakdown, and score distribution. Fully offline (no CDN), embeds the RCA narrative when `--rca` is used.
-- ⏱️ **Speed benchmark (`loglens bench`)** - lines/sec, time-to-insight, and peak RAM across modes, exportable to markdown.
-- 🧪 **Reproducible accuracy benchmark (`loglens benchmark`)** - precision / recall / F1 against labeled datasets, grid-search, supervised head, and a `--min-f1` CI gate. Don't trust us; run it yourself.
-- 🔒 **100% local & private** - detection never leaves your machine; air-gap friendly.
-
----
-
-## 🚀 Quick start
+**With pip (recommended):**
 
 ```bash
-pip install loglens
+pip install loglensai            # fast + turbo detection, watch, alerts, SDK, RCA
+pip install "loglensai[deep]"    # + neural (transformer) semantic mode
+```
 
-# analyze any log file - format auto-detected
+**With Docker (nothing to install, multi-arch amd64 + arm64):**
+
+```bash
+docker run --rm -v "$PWD:/data" loglensai/loglens analyze --source app.log
+```
+
+Requires Python 3.10+. MIT licensed.
+
+---
+
+## ⚡ Quick start
+
+```bash
+# analyze any log file - format auto-detected, incidents grouped
 loglens analyze --source app.log
 
 # maximum throughput on huge files
 loglens analyze --source app.log --turbo
 
-# AI semantic mode (best precision)
+# neural semantic mode - best precision
 loglens analyze --source app.log --deep
 
 # full incident workflow: turbo scan + AI root-cause + offline HTML report
 loglens analyze --source app.log --turbo --rca --html report.html
 
-# watch a running service live and get only the problems
+# watch a running service live - get ONLY the problems, instantly
 loglens watch "docker logs -f my-api"
 
-# ask a question about a log file
+# ask your logs a question in plain English
 loglens ask "why did the payment service start timing out?" --source app.log
 
-# benchmark speed across modes
-loglens bench app.log --modes fast,turbo,deep --out BENCHMARK.md
+# reproducible accuracy benchmark against labeled data
+loglens benchmark labeled.log --min-f1 0.90
 ```
 
-**Add self-alerting to your own app in one line:**
+**Add Sentry-style self-alerting to your own app in _one line_:**
 
 ```python
 import loglens
 loglens.init(app_name="checkout-api")   # → Slack / Teams / Email on serious events
 ```
 
-📖 **Full command & SDK reference:** see [DOCUMENTATION.md](DOCUMENTATION.md).
+📖 Full command & SDK reference → **[loglensai.com/docs](https://loglensai.com/docs)** and [DOCUMENTATION.md](DOCUMENTATION.md).
+
+---
+
+## 📊 Benchmarks - measured, reproducible, honest
+
+All numbers on real labeled datasets from [Loghub](https://github.com/logpai/loghub). Reproduce them yourself → [BENCHMARK.md](BENCHMARK.md).
+
+### Accuracy - Loghub BGL (500,000 lines, 206,847 labeled alerts)
+
+| Mode | Engine | Precision | Recall | **F1** | Speed | Missed alerts |
+|------|--------|:---------:|:------:|:------:|:-----:|:-------------:|
+| ⚡ **fast** | from-scratch statistical | 0.901 | **1.000** | 0.948 | ~6,700 l/s | **0** |
+| 🚀 **turbo** | optimized statistical | 0.901 | **1.000** | 0.948 | ~7,300 l/s | **0** |
+| 🧠 **deep** | AI semantic embeddings | **0.917** | **1.000** | **0.957** | ~3,400 l/s | **0** |
+
+- 🎯 **Zero missed alerts** - 1.000 recall across all 206,847 alerts, every mode.
+- 🧠 **Deep mode measurably beats the baseline** - semantic embeddings cut false positives ~18%. Provable AI value, not marketing.
+- 🚀 **Turbo matches fast-mode accuracy exactly** at higher throughput - speed with no accuracy tradeoff.
+
+### Generality - no retuning (Sandia Thunderbird, 500k all-normal lines)
+
+| Mode | False-alarm rate | Specificity | Speed |
+|------|:----------------:|:-----------:|:-----:|
+| fast | 0.68% | **99.32%** | ~8,600 l/s |
+| deep | 0.67% | **99.33%** | ~1,800 l/s |
+
+### Needle-in-a-haystack - 30/30 injected incidents caught
+
+Kernel panic, OOM, disk failure, security breach and data corruption injected into routine logs across **6 formats** (Apache, Spark, HDFS, HealthApp, OpenStack, Thunderbird): **100% recall, zero configuration.**
+
+---
+
+## ✨ Features
+
+### 🔬 Detection core
+- **Three engines, one unified score** - `fast` (from-scratch statistical: TF-IDF template embeddings, weighted density clustering, severity/rarity/chronic scoring - no ML libs in the core), `turbo` (same accuracy, parallel byte-range scanning + template dedup), and `deep` (transformer semantic embeddings that understand log *meaning*, run on unique templates for speed).
+- **Incident families** - repeated anomalies collapse into one incident with an `×N` count. No scrolling through 200 identical errors.
+- **Explainable by default** - every flag ships with a plain-language reason (rare + severe + burst context), not just a number.
+- **10+ log formats auto-detected** - Apache, Linux, Mac, HDFS, Spark, Zookeeper, OpenStack, Thunderbird, BGL, HealthApp & generic. No config, ever.
+- **Flexible ingestion** - files, stdin, HTTP, and live commands.
+
+### 📡 Live & always-on
+- **`loglens watch`** - point it at `docker logs -f`, `kubectl logs -f`, or `journalctl -f` and it prints **only the problems**, instantly. CRITICAL/FATAL surface immediately; Ctrl-C prints a summary (optionally with AI root-cause + HTML dashboard).
+- **Self-alerting in one line (`loglens.init`)** - Sentry-style alerts to **Slack / Teams / Email** the moment something serious happens, *including uncaught crashes*. De-duplicated, rate-limited, sent from a background thread so it never risks your app. Works with **zero AI setup** (built-in cause hints) and gets richer with a BYO LLM key.
+
+### 🤖 AI layer (bring your own key)
+- **AI root-cause analysis (`--rca`)** - BYO key (OpenAI / Azure / Groq). Sends only **grouped anomaly summaries** to the LLM - never your full log - so it's cheap, private, and coherent.
+- **Natural-language Q&A (`loglens ask`)** - ask *"why did db-service degrade?"* and get an answer grounded in the detected anomalies.
+
+### 🐍 Python SDK
+```python
+from loglens import analyze
+result = analyze("app.log")                 # or lines=[...], cmd="docker logs api"
+for a in result.anomalies:
+    print(a.level, a.score, a.message, a.reasons)
+print(result.rca().report)                  # AI root-cause (BYO key)
+```
+- `analyze()` / `analyze_async()` - "here are logs, give me the problems."
+- `LogLensHandler` - drop into Python's `logging` so your app raises its own alarm.
+- `LiveDetector` - feed a custom stream line-by-line, get anomalies out (powers `watch`).
+- `.rca()`, `.ask(...)`, `.save_html(...)`, `.save_rca(...)` on any result or live session.
+
+### 📈 Reporting & benchmarking
+- **Self-contained HTML report (`--html`)** - dark-themed dashboard, severity + per-service breakdown, score distribution. Fully offline (no CDN), embeds the RCA narrative.
+- **Speed benchmark (`loglens bench`)** - lines/sec, time-to-insight, peak RAM across modes.
+- **Reproducible accuracy benchmark (`loglens benchmark`)** - precision / recall / F1 on labeled data, grid-search, and a `--min-f1` CI gate.
+- **100% local & private** - detection never leaves your machine; air-gap friendly.
 
 ---
 
 ## 🧭 How it works
 
 1. **Parse** - streaming parser auto-detects the log format.
-2. **Template** - messages are mined into templates; volume statistics per template.
-3. **Embed** - templates are embedded (TF-IDF in fast/turbo, transformer in deep) - one vector per unique template for speed.
-4. **Detect** - an ensemble score blends severity prior, template rarity, embedding distance, chronic damping and global-rarity bonus into a calibrated continuous score.
-5. **Group** - repeated anomalies are collapsed into incident families (`×N`).
-6. **Explain** - every anomaly is reported with its human-readable reason; optionally an LLM writes the root-cause narrative.
-7. **Deliver** - print to terminal, stream live via `watch`, alert to Slack/Teams/Email via `init`, or export an offline HTML report.
+2. **Template** - messages mined into templates; per-template volume statistics.
+3. **Embed** - TF-IDF (fast/turbo) or transformer (deep); one vector per unique template for speed.
+4. **Detect** - an ensemble score blends severity prior, template rarity, embedding distance, chronic-pattern damping, and a global-rarity bonus into a calibrated continuous score.
+5. **Group** - repeated anomalies collapse into incident families (`×N`).
+6. **Explain** - each anomaly reported with its human-readable reason; optionally an LLM writes the root-cause narrative.
+7. **Deliver** - terminal, live `watch`, Slack/Teams/Email via `init`, or offline HTML report.
+
+---
+
+## 🐳 Docker
+
+Multi-arch images (`linux/amd64` + `linux/arm64`) on [Docker Hub](https://hub.docker.com/r/loglensai/loglens):
+
+```bash
+# analyze a file (mount the folder that holds it)
+docker run --rm -v "$PWD:/data" loglensai/loglens analyze --source app.log
+
+# live-watch another container (mount the docker socket)
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  loglensai/loglens watch "docker logs -f my-api" --rca
+```
+
+Tags: `latest`, `0.3`, `0.3.1` (slim), and `deep` (adds neural mode).
 
 ---
 
 ## 🗺️ Roadmap
 
 - 🔧 Chronic-noise damping improvements for Linux/Mac daemon logs.
-- 📦 Prebuilt Docker image and GitHub Action.
-- 📊 Additional alert channels (PagerDuty, Opsgenie, generic webhooks).
+- 📦 Prebuilt GitHub Action for CI log gating.
+- 📊 More alert channels - PagerDuty, Opsgenie, generic webhooks.
 - 🌐 Optional lightweight web UI for the HTML dashboards.
 
 ---
@@ -185,8 +212,29 @@ loglens.init(app_name="checkout-api")   # → Slack / Teams / Email on serious e
 - Deep mode embeds unique templates only - a real optimization, disclosed.
 - `--rca`, `ask`, and alert cause-hints send only grouped anomaly summaries to the LLM, never the full log.
 - Alerting works fully offline with built-in cause hints; an LLM key only enriches the narrative.
-- All tests reproducible with the included harness. See [BENCHMARK.md](BENCHMARK.md).
+- All results reproducible with the included harness. See [BENCHMARK.md](BENCHMARK.md).
+
+---
+
+## 🤝 Contributing & support
+
+Issues and PRs welcome. If LogLens AI saves you a 2 a.m. page, please **⭐ star the repo** - it genuinely helps.
+
+- 🌐 Website: [loglensai.com](https://loglensai.com)
+- 📦 PyPI: [pypi.org/project/loglensai](https://pypi.org/project/loglensai/)
+- 🐳 Docker Hub: [hub.docker.com/r/loglensai/loglens](https://hub.docker.com/r/loglensai/loglens)
+- 📖 Docs: [loglensai.com/docs](https://loglensai.com/docs)
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE). Use it in production, commercially, anywhere.
+
+---
+
+<div align="center">
+
+**`pip install loglensai`** - your first insight is seconds away.
+
+*log anomaly detection · AI log analysis · self-hosted observability · Splunk alternative · Datadog alternative · root-cause analysis · SRE / DevOps · Kubernetes log monitoring · Sentry for logs*
+
+</div>
